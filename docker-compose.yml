@@ -1,0 +1,78 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: agentops-backend
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=development
+      - BACKEND_PORT=4000
+    env_file:
+      - .env
+    volumes:
+      - ./backend/src:/app/src
+      - /app/node_modules
+    depends_on:
+      - redis
+    networks:
+      - agentops-network
+    restart: unless-stopped
+
+  agents:
+    build:
+      context: ./agents
+      dockerfile: Dockerfile
+    container_name: agentops-agents
+    ports:
+      - "5000:5000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENTS_PORT=5000
+    env_file:
+      - .env
+    volumes:
+      - ./agents:/app
+    depends_on:
+      - redis
+    networks:
+      - agentops-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: agentops-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:4000
+      - VITE_WS_URL=ws://localhost:4000
+    volumes:
+      - ./frontend/src:/app/src
+      - /app/node_modules
+    networks:
+      - agentops-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: agentops-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - agentops-network
+    restart: unless-stopped
+
+networks:
+  agentops-network:
+    driver: bridge
+
+volumes:
+  redis_data:
