@@ -15,13 +15,14 @@ services:
       - .env
     volumes:
       - ./backend/src:/app/src
+      - ./secrets:/secrets
       - /app/node_modules
     depends_on:
       - redis
     networks:
       - agentops-network
     restart: unless-stopped
-
+    
   agents:
     build:
       context: ./agents
@@ -36,6 +37,7 @@ services:
       - .env
     volumes:
       - ./agents:/app
+        
     depends_on:
       - redis
     networks:
