@@ -73,8 +73,3 @@ AgentOps/
 
 🚧 **In active development** — 35-day build timeline.
 
-See [`docs/AgentOps-Setup-Log.md`](docs/AgentOps-Setup-Log.md) for daily progress.
-
-## License
-
-MIT
