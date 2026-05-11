@@ -145,7 +145,14 @@ async def receive_review_request(request: ReviewRequest):
         logger.info(f"REVIEW COMPLETE: {request.pipeline_id}")
         logger.info(f"  Decision: {report['decision']}")
         logger.info(f"  Reason: {report['reason']}")
-        logger.info(f"  Security Score: {report['scores']['security']}/100")
+        logger.info(f"  Scores:")
+        logger.info(f"    Overall:        {report['scores']['overall']}/100")
+        logger.info(f"    Security:       {report['scores']['security']}/100")
+        logger.info(f"    Code Quality:   {report['scores']['code_quality']}/100")
+        logger.info(f"    Performance:    {report['scores']['performance']}/100")
+        logger.info(f"    Architecture:   {report['scores']['architecture']}/100")
+        logger.info(f"    Test Impact:    {report['scores']['test_impact']}/100")
+        logger.info(f"    Documentation:  {report['scores']['documentation']}/100")
         logger.info(f"  Findings: {report['summary']}")
 
         if report['findings']:

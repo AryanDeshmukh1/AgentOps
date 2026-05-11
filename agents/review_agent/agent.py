@@ -1,23 +1,32 @@
 """
 ReviewAgent — Orchestrates the 6-layer code review.
-Currently implements Layer 1 (regex pattern scanning).
-Layers 2-6 will be added in subsequent days.
+- Layer 1: Regex-based pattern scanner (security)
+- Layers 2-6: AI-powered analysis (Gemini)
 """
 import time
 from dataclasses import asdict
 from typing import List, Dict, Any
 
 from review_agent.pattern_scanner import scan_patch, Finding, Severity
+from review_agent.ai_analyzer import run_ai_analysis
 from shared.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-def calculate_layer_1_score(findings: List[Finding]) -> int:
-    """
-    Calculate security score (0-100) based on findings.
-    Each finding deducts points based on severity.
-    """
+# Layer weights for overall score
+WEIGHTS = {
+    "security":      0.30,
+    "code_quality":  0.20,
+    "performance":   0.15,
+    "architecture":  0.15,
+    "test_impact":   0.10,
+    "documentation": 0.10,
+}
+
+
+def calculate_security_score(findings: List[Finding]) -> int:
+    """Layer 1 score based on regex findings."""
     score = 100
     for f in findings:
         if f.severity == Severity.CRITICAL:
@@ -31,6 +40,29 @@ def calculate_layer_1_score(findings: List[Finding]) -> int:
     return max(0, score)
 
 
+def calculate_overall_score(layer_scores: Dict[str, int]) -> float:
+    """Weighted overall score across all 6 layers."""
+    total = sum(
+        layer_scores.get(layer, 80) * weight
+        for layer, weight in WEIGHTS.items()
+    )
+    return round(max(0, min(100, total)), 1)
+
+
+def determine_decision(overall_score: float, has_critical: bool) -> tuple[str, str]:
+    """Decision logic based on overall score and critical findings."""
+    if has_critical:
+        return "BLOCK", "Critical security finding(s) detected"
+    elif overall_score >= 85:
+        return "AUTO_APPROVE", "High confidence, low risk"
+    elif overall_score >= 70:
+        return "PASS_WITH_WARNINGS", "Acceptable but has areas for improvement"
+    elif overall_score >= 50:
+        return "REQUEST_CHANGES", "Multiple issues need attention"
+    else:
+        return "REJECT", "Significant issues require rework"
+
+
 def summarize_findings(findings: List[Finding]) -> Dict[str, int]:
     """Count findings by severity."""
     summary = {"critical": 0, "high": 0, "medium": 0, "low": 0}
@@ -41,43 +73,59 @@ def summarize_findings(findings: List[Finding]) -> Dict[str, int]:
 
 async def run_review(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Run a code review on the given pipeline data.
-
-    Args:
-        pipeline_data: Dict with pipeline_id, repo, pr_number, files, etc.
-
-    Returns:
-        Review report dict with findings, scores, and decision.
+    Run the complete 6-layer code review.
     """
     pipeline_id = pipeline_data["pipeline_id"]
     files = pipeline_data["files"]
 
-    logger.info(f"[{pipeline_id}] ReviewAgent starting analysis on {len(files)} file(s)")
+    logger.info(f"[{pipeline_id}] ReviewAgent starting on {len(files)} file(s)")
     start_time = time.time()
 
-    # Run Layer 1: Pattern scanner on all changed files
-    all_findings: List[Finding] = []
+    all_regex_findings: List[Finding] = []
+    all_ai_findings: List[Finding] = []
+
+    # Layer scores aggregated across all files (average per layer)
+    layer_scores_per_file: Dict[str, List[int]] = {
+        "code_quality": [],
+        "performance": [],
+        "architecture": [],
+        "test_impact": [],
+        "documentation": [],
+    }
+
     for file_data in files:
         filename = file_data["filename"]
         patch = file_data.get("patch", "")
 
-       
-
-        # Skip non-code files
         if not _is_code_file(filename):
             logger.debug(f"[{pipeline_id}] Skipping non-code file: {filename}")
             continue
 
         if not patch:
-            logger.debug(f"[{pipeline_id}] No patch content for {filename}, skipping")
+            logger.debug(f"[{pipeline_id}] No patch for {filename}")
             continue
 
-        file_findings = scan_patch(filename, patch)
-        logger.info(f"[{pipeline_id}] Scanned {filename}: found {len(file_findings)} issues")
-        if file_findings: 
-            all_findings.extend(file_findings)
+        # Layer 1: Regex scan
+        regex_findings = scan_patch(filename, patch)
+        logger.info(f"[{pipeline_id}] Layer 1 ({filename}): {len(regex_findings)} findings")
+        all_regex_findings.extend(regex_findings)
 
-    # Sort by severity (critical first)
+        # Layers 2-6: AI analysis
+        ai_result = await run_ai_analysis(filename, patch, pipeline_id)
+        ai_findings = ai_result["findings"]
+        ai_scores = ai_result["scores"]
+
+        logger.info(f"[{pipeline_id}] Layers 2-6 ({filename}): {len(ai_findings)} findings")
+        all_ai_findings.extend(ai_findings)
+
+        for layer, score in ai_scores.items():
+            if layer in layer_scores_per_file:
+                layer_scores_per_file[layer].append(score)
+
+    # Combine all findings
+    all_findings = all_regex_findings + all_ai_findings
+
+    # Sort by severity
     severity_order = {
         Severity.CRITICAL: 0,
         Severity.HIGH: 1,
@@ -87,34 +135,34 @@ async def run_review(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
     all_findings.sort(key=lambda f: severity_order[f.severity])
 
     # Calculate scores
-    layer_1_score = calculate_layer_1_score(all_findings)
-    summary = summarize_findings(all_findings)
+    security_score = calculate_security_score(all_regex_findings)
 
-    # Decision logic for Layer 1 only (full 6-layer scoring comes later)
+    # Average AI scores across files (default to 90 if no AI ran)
+    avg_ai_scores = {
+        layer: int(sum(scores) / len(scores)) if scores else 90
+        for layer, scores in layer_scores_per_file.items()
+    }
+
+    all_layer_scores = {
+        "security": security_score,
+        **avg_ai_scores,
+    }
+
+    overall_score = calculate_overall_score(all_layer_scores)
+    summary = summarize_findings(all_findings)
     has_critical = summary["critical"] > 0
-    if has_critical:
-        decision = "BLOCK"
-        reason = f"{summary['critical']} critical security finding(s) detected"
-    elif layer_1_score >= 85:
-        decision = "PASS"
-        reason = "No significant security issues"
-    elif layer_1_score >= 70:
-        decision = "PASS_WITH_WARNINGS"
-        reason = "Minor issues found but acceptable"
-    else:
-        decision = "REQUEST_CHANGES"
-        reason = "Multiple security issues need attention"
+    decision, reason = determine_decision(overall_score, has_critical)
 
     duration_ms = int((time.time() - start_time) * 1000)
 
     report = {
         "pipeline_id": pipeline_id,
         "agent": "ReviewAgent",
-        "layer": 1,
         "duration_ms": duration_ms,
         "summary": summary,
         "scores": {
-            "security": layer_1_score,
+            **all_layer_scores,
+            "overall": overall_score,
         },
         "decision": decision,
         "reason": reason,
@@ -122,8 +170,8 @@ async def run_review(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     logger.info(
-        f"[{pipeline_id}] ReviewAgent Layer 1 complete in {duration_ms}ms — "
-        f"score={layer_1_score}, decision={decision}, findings={len(all_findings)}"
+        f"[{pipeline_id}] ReviewAgent complete in {duration_ms}ms — "
+        f"overall={overall_score}, decision={decision}, findings={len(all_findings)}"
     )
 
     return report
