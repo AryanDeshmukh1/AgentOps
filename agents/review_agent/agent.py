@@ -71,6 +71,40 @@ def summarize_findings(findings: List[Finding]) -> Dict[str, int]:
     return summary
 
 
+def deduplicate_findings(findings: List[Finding]) -> List[Finding]:
+    """
+    Merge duplicate findings that detect the same issue.
+    Two findings are duplicates if they have the same file, same line,
+    and similar category (security duplicates from both regex and AI).
+    """
+    seen = {}  # key: (file, line, normalized_title) -> Finding
+    deduplicated = []
+
+    for finding in findings:
+        # Create a fuzzy match key
+        # Normalize titles like "Hardcoded API key" and "Hardcoded API Key"
+        normalized_title = finding.title.lower().strip()
+
+        # Take first 3 words of normalized title for grouping
+        title_key = " ".join(normalized_title.split()[:3])
+        key = (finding.file, finding.line, title_key)
+
+        if key not in seen:
+            seen[key] = finding
+            deduplicated.append(finding)
+        else:
+            # Prefer regex detection over AI (regex is deterministic)
+            # If existing is AI and new is regex, replace
+            existing = seen[key]
+            if existing.detection_method == "ai" and finding.detection_method == "regex":
+                # Replace AI version with regex version
+                deduplicated.remove(existing)
+                deduplicated.append(finding)
+                seen[key] = finding
+
+    return deduplicated
+
+
 async def run_review(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Run the complete 6-layer code review.

@@ -1,4 +1,4 @@
-"""
+﻿"""
 AgentOps Agent System — FastAPI server hosting the multi-agent orchestrator.
 """
 import os
@@ -7,6 +7,7 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,7 +15,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configure logging
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -24,7 +24,6 @@ logger = logging.getLogger("agentops")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown lifecycle"""
     logger.info("AgentOps Agent System starting up...")
     logger.info(f"AWS Region: {os.getenv('AWS_REGION', 'not_set')}")
     logger.info(f"Gemini Model: {os.getenv('GEMINI_MODEL_PRIMARY', 'not_set')}")
@@ -39,7 +38,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://localhost:4000"],
@@ -48,10 +46,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ============================================================
-# Health Endpoints
-# ============================================================
 
 @app.get("/")
 async def root():
@@ -87,10 +81,6 @@ async def health_deep():
     }
 
 
-# ============================================================
-# Pipeline Models
-# ============================================================
-
 class FileChange(BaseModel):
     filename: str
     status: str
@@ -113,34 +103,23 @@ class ReviewRequest(BaseModel):
     timestamp: str
 
 
-# ============================================================
-# Pipeline Endpoints
-# ============================================================
-
 @app.post("/api/review")
 async def receive_review_request(request: ReviewRequest):
-    """
-    Receives a PR for review and runs ReviewAgent.
-    Currently runs Layer 1 (regex pattern scanning).
-    """
     logger.info("=" * 60)
     logger.info(f"NEW PIPELINE: {request.pipeline_id}")
     logger.info(f"  Repo: {request.repo}")
     logger.info(f"  PR #{request.pr_number}: {request.pr_title}")
-    logger.info(f"  Author: {request.pr_author}")
     logger.info(f"  Files changed: {len(request.files)}")
     logger.info("=" * 60)
 
-    # Convert Pydantic model to dict for the agent
     pipeline_data = request.model_dump()
 
-    # Import here to avoid circular imports
     from review_agent.agent import run_review
+    from review_agent.github_formatter import format_review_comment
 
     try:
         report = await run_review(pipeline_data)
 
-        # Log the report summary
         logger.info("=" * 60)
         logger.info(f"REVIEW COMPLETE: {request.pipeline_id}")
         logger.info(f"  Decision: {report['decision']}")
@@ -155,12 +134,35 @@ async def receive_review_request(request: ReviewRequest):
         logger.info(f"    Documentation:  {report['scores']['documentation']}/100")
         logger.info(f"  Findings: {report['summary']}")
 
-        if report['findings']:
-            logger.info("  Top findings:")
-            for f in report['findings'][:5]:  # Show top 5
-                logger.info(f"    [{f['severity'].upper()}] {f['file']}:{f['line']} — {f['title']}")
-
+        if report.get("findings"):
+            logger.info(f"  Top findings:")
+            for f in report["findings"][:5]:
+                logger.info(f"    [{f['severity'].upper()}] {f['file']}:{f['line']} - {f['title']}")
         logger.info("=" * 60)
+
+        # Format and post comment to GitHub via the backend
+        comment_body = format_review_comment(report)
+        backend_url = os.getenv("BACKEND_URL", "http://backend:4000")
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(
+                    f"{backend_url}/api/webhooks/post-review",
+                    json={
+                        "repo": request.repo,
+                        "pr_number": request.pr_number,
+                        "comment": comment_body,
+                        "head_sha": request.head_sha,
+                        "decision": report["decision"],
+                    },
+                )
+                if response.status_code == 200:
+                    logger.info(f"[{request.pipeline_id}] Comment posted on GitHub")
+                else:
+                    logger.warning(f"[{request.pipeline_id}] Failed to post comment: HTTP {response.status_code}")
+                    logger.warning(f"[{request.pipeline_id}] Response: {response.text[:200]}")
+        except Exception as post_err:
+            logger.error(f"[{request.pipeline_id}] Comment post failed: {post_err}")
 
         return {
             "status": "completed",
@@ -174,4 +176,3 @@ async def receive_review_request(request: ReviewRequest):
             "pipeline_id": request.pipeline_id,
             "error": str(e),
         }
-   
