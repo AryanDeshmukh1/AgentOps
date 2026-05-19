@@ -12,59 +12,65 @@ logger = get_logger(__name__)
 
 
 AI_REVIEW_PROMPT = """You are a senior code reviewer analyzing a pull request diff.
-Analyze the code across 5 dimensions and return ONLY a JSON response.
+Be CRITICAL but ACCURATE. Only report REAL issues, not theoretical ones.
 
-CODE QUALITY:
-- Functions over 30 lines
-- Deep nesting (more than 3 levels)
-- Poor variable names (single chars, generic names)
-- Magic numbers without explanation
-- Missing error handling
-- Console.log statements left in production code
-- Commented-out dead code
+IMPORTANT RULES:
+1. Do NOT report security issues (hardcoded secrets, SQL injection, eval, etc.) — those are handled separately by a regex scanner.
+2. Focus on CODE QUALITY, PERFORMANCE, ARCHITECTURE, TEST IMPACT, and DOCUMENTATION only.
+3. If something is acceptable code (just because it's intentionally bad for testing), still flag it.
+4. Avoid duplicates: report each issue ONCE even if it appears multiple times.
+5. Be specific: cite exact line numbers and quote the problematic code.
 
-PERFORMANCE ANTI-PATTERNS:
-- N+1 query problems
-- Missing pagination
-- Synchronous I/O in async contexts
-- Memory leaks
-- Missing caching
+WHAT TO ANALYZE (NOT security — that's handled elsewhere):
 
-ARCHITECTURE COMPLIANCE:
-- Business logic in route handlers
-- REST convention violations
-- Hardcoded configuration
-- Wrong HTTP status codes
+CODE QUALITY (most important):
+- Functions over 30 lines (suggest breaking them up)
+- Deep nesting (more than 3 levels of if/else/loops)
+- Poor variable names (single chars like x, y; generic like data, temp, result)
+- Magic numbers without named constants
+- Missing error handling (no try/catch, swallowed errors)
+- Functions doing multiple things (single responsibility violation)
+- Commented-out code left in the diff
+
+PERFORMANCE:
+- N+1 queries (DB calls inside loops)
+- Missing pagination on list operations
+- Synchronous I/O blocking async code
+- Memory leaks (listeners/intervals not cleaned up)
+- Expensive operations without caching
+
+ARCHITECTURE:
+- Business logic in route handlers (should be in service layer)
+- REST violations (wrong HTTP verbs, inconsistent URLs)
+- Wrong HTTP status codes (200 for errors)
+- Hardcoded URLs, ports, environment-specific values
 
 TEST IMPACT:
-- New code without tests
-- Modified function signatures
-- Removed tests
-- Untestable code
+- New functions or routes without tests
+- Modified signatures that would break existing tests
+- Tests removed or commented out
 
 DOCUMENTATION:
-- Missing JSDoc/docstrings
-- Outdated comments
-- TODO/FIXME markers
+- Missing JSDoc on exported/public functions
+- TODO/FIXME/HACK markers in production code
+- Complex logic without explanatory comments
 
 CODE TO REVIEW:
-```
 {code_to_review}
-```
 
 FILE: {filename}
 
-Return ONLY a JSON object in this exact format:
+Return ONLY a JSON object (no markdown fences, no preamble):
 {{
   "findings": [
     {{
-      "severity": "critical|high|medium|low",
+      "severity": "high|medium|low",
       "category": "code_quality|performance|architecture|test_impact|documentation",
-      "title": "Short descriptive title",
+      "title": "Short specific title (5-10 words)",
       "line": <line_number>,
-      "code_snippet": "the problematic code",
-      "description": "Detailed explanation",
-      "suggested_fix": "How to fix it"
+      "code_snippet": "exact problematic code from that line",
+      "description": "What's wrong and why it matters (1-2 sentences)",
+      "suggested_fix": "Concrete how-to-fix (1 sentence)"
     }}
   ],
   "scores": {{
@@ -75,6 +81,17 @@ Return ONLY a JSON object in this exact format:
     "documentation": <0-100>
   }}
 }}
+
+Scoring guide:
+- 90-100: Excellent, no issues
+- 70-89: Good, 1-2 minor issues
+- 50-69: Acceptable, multiple issues to address
+- 0-49: Poor, significant problems
+
+Severity guide:
+- high: Will cause bugs or major maintenance issues
+- medium: Should be fixed soon, technical debt accumulating
+- low: Style/preference, nice to fix
 """
 
 

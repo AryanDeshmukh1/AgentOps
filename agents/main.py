@@ -72,12 +72,6 @@ async def health_deep():
         "status": "healthy",
         "service": "agentops-agents",
         "timestamp": datetime.utcnow().isoformat() + "Z",
-        "checks": {
-            "api": "healthy",
-            "gemini": "pending_integration",
-            "dynamodb": "pending_integration",
-            "sqs": "pending_integration",
-        },
     }
 
 
@@ -116,6 +110,11 @@ async def receive_review_request(request: ReviewRequest):
 
     from review_agent.agent import run_review
     from review_agent.github_formatter import format_review_comment
+    from shared.dynamodb_service import get_dynamodb_service
+
+    # Save pipeline record to DynamoDB
+    db = get_dynamodb_service()
+    await db.save_pipeline(pipeline_data)
 
     try:
         report = await run_review(pipeline_data)
@@ -140,6 +139,21 @@ async def receive_review_request(request: ReviewRequest):
                 logger.info(f"    [{f['severity'].upper()}] {f['file']}:{f['line']} - {f['title']}")
         logger.info("=" * 60)
 
+        # Save agent decision to DynamoDB
+        await db.save_agent_decision(request.pipeline_id, "ReviewAgent", report)
+
+        # Update pipeline status
+        await db.update_pipeline_status(
+            request.pipeline_id,
+            request.timestamp,
+            {
+                "status": "review_complete",
+                "review_score": report["scores"]["overall"],
+                "decision": report["decision"],
+                "total_findings": sum(report["summary"].values()),
+            },
+        )
+
         # Format and post comment to GitHub via the backend
         comment_body = format_review_comment(report)
         backend_url = os.getenv("BACKEND_URL", "http://backend:4000")
@@ -160,7 +174,6 @@ async def receive_review_request(request: ReviewRequest):
                     logger.info(f"[{request.pipeline_id}] Comment posted on GitHub")
                 else:
                     logger.warning(f"[{request.pipeline_id}] Failed to post comment: HTTP {response.status_code}")
-                    logger.warning(f"[{request.pipeline_id}] Response: {response.text[:200]}")
         except Exception as post_err:
             logger.error(f"[{request.pipeline_id}] Comment post failed: {post_err}")
 
@@ -171,6 +184,11 @@ async def receive_review_request(request: ReviewRequest):
         }
     except Exception as e:
         logger.error(f"[{request.pipeline_id}] Review failed: {e}", exc_info=True)
+        await db.update_pipeline_status(
+            request.pipeline_id,
+            request.timestamp,
+            {"status": "failed", "error": str(e)[:500]},
+        )
         return {
             "status": "error",
             "pipeline_id": request.pipeline_id,
