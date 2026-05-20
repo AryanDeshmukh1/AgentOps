@@ -1,6 +1,7 @@
-"""
+﻿"""
 Test Impact Analyzer — deterministic mapping of code changes to test files.
-Identifies which existing tests are likely affected by a PR.
+Now with smarter heuristics: detects existing test files from filenames
+even when they're not in the current PR.
 """
 import re
 from dataclasses import dataclass
@@ -14,137 +15,120 @@ logger = get_logger(__name__)
 
 @dataclass
 class TestImpact:
-    """Represents how a code file impacts the test suite."""
     source_file: str
     related_test_files: List[str]
     modified_functions: List[str]
     has_existing_tests: bool
     test_coverage_status: str  # "covered" | "partial" | "uncovered"
+    is_critical_path: bool      # Files in auth/, payment/, security/, etc.
 
 
-# Common test file naming patterns
-TEST_FILE_PATTERNS = [
-    "{name}.test.{ext}",     # foo.test.js
-    "{name}.spec.{ext}",     # foo.spec.js
-    "test_{name}.{ext}",     # test_foo.py
-    "{name}_test.{ext}",     # foo_test.py
-    "tests/{name}.{ext}",    # tests/foo.js
-    "__tests__/{name}.{ext}", # __tests__/foo.js
-]
+# Naming conventions for test files
+def expected_test_paths(source_file: str) -> List[str]:
+    """Given source/utils/auth.js, return likely test paths."""
+    path = PurePosixPath(source_file)
+    name = path.stem
+    ext = path.suffix.lstrip('.')
+    parent = path.parent
+
+    paths = [
+        f"{parent}/{name}.test.{ext}",
+        f"{parent}/{name}.spec.{ext}",
+        f"{parent}/__tests__/{name}.{ext}",
+        f"{parent}/__tests__/{name}.test.{ext}",
+        f"{parent}/tests/{name}.{ext}",
+        f"tests/{name}.{ext}",
+        f"tests/{name}.test.{ext}",
+        f"test/{name}.{ext}",
+        f"test_{name}.py",
+        f"tests/test_{name}.py",
+        f"{name}_test.go",
+    ]
+    return paths
 
 
 def extract_function_signatures(content: str, filename: str) -> List[str]:
     """Extract function/method/class names from source code."""
     functions = []
-
-    # JavaScript/TypeScript patterns
     if filename.endswith(('.js', '.jsx', '.ts', '.tsx', '.mjs')):
-        # function foo(...) {}
         functions += re.findall(r'function\s+([a-zA-Z_$][\w$]*)\s*\(', content)
-        # const foo = () => / const foo = function
         functions += re.findall(r'(?:const|let|var)\s+([a-zA-Z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function|\()', content)
-        # class Foo { method() {} }
         functions += re.findall(r'class\s+([a-zA-Z_$][\w$]*)', content)
-        # export function foo / export class Foo
         functions += re.findall(r'export\s+(?:async\s+)?(?:function|class)\s+([a-zA-Z_$][\w$]*)', content)
-
-    # Python patterns
     elif filename.endswith('.py'):
         functions += re.findall(r'def\s+([a-zA-Z_][\w]*)\s*\(', content)
         functions += re.findall(r'class\s+([a-zA-Z_][\w]*)', content)
         functions += re.findall(r'async\s+def\s+([a-zA-Z_][\w]*)\s*\(', content)
 
-    # Remove duplicates while preserving order
     seen = set()
     unique = []
     for f in functions:
-        if f not in seen and not f.startswith('_'):  # Skip private functions
+        if f not in seen and not f.startswith('_'):
             seen.add(f)
             unique.append(f)
-
     return unique
 
 
 def extract_added_functions(patch: str, filename: str) -> List[str]:
-    """Extract function names that were ADDED (not modified) in the diff."""
+    """Extract function names added in the diff."""
     if not patch:
         return []
-
-    # Get only added lines (start with '+')
     added_lines = []
     for line in patch.split('\n'):
         if line.startswith('+') and not line.startswith('+++'):
             added_lines.append(line[1:])
-
-    added_content = '\n'.join(added_lines)
-    return extract_function_signatures(added_content, filename)
+    return extract_function_signatures('\n'.join(added_lines), filename)
 
 
-def find_related_test_files(source_file: str, all_files: List[str]) -> List[str]:
-    """
-    Given a source file like 'src/utils/auth.js',
-    find test files like 'src/utils/auth.test.js' or 'tests/auth.test.js'.
-    """
-    related = []
-    path = PurePosixPath(source_file)
-    name = path.stem  # 'auth' from 'auth.js'
-    ext = path.suffix.lstrip('.')  # 'js' from 'auth.js'
-
-    # Generate possible test file paths
-    candidates = set()
-    for pattern in TEST_FILE_PATTERNS:
-        # Try same directory
-        candidates.add(str(path.parent / pattern.format(name=name, ext=ext)))
-        # Try root tests folder
-        candidates.add(pattern.format(name=name, ext=ext))
-
-    # Also any file with the source name in a test path
-    for f in all_files:
-        if name in f and ('test' in f.lower() or 'spec' in f.lower()):
-            related.append(f)
-        elif f in candidates:
-            related.append(f)
-
-    return list(set(related))  # Remove duplicates
+def is_critical_path(filename: str) -> bool:
+    """Files in critical paths require tests."""
+    lower = filename.lower()
+    critical_keywords = ['auth', 'security', 'payment', 'billing', 'crypto', 'admin', 'permission']
+    return any(kw in lower for kw in critical_keywords)
 
 
 def analyze_impact(files: List[Dict[str, Any]]) -> List[TestImpact]:
-    """
-    Analyze test impact for all changed files in a PR.
-
-    Args:
-        files: List of file dicts from the PR (with filename, patch, etc.)
-
-    Returns:
-        List of TestImpact objects
-    """
+    """Analyze test impact for all changed files."""
     impacts = []
     all_filenames = [f["filename"] for f in files]
 
-    # Classify files
     source_files = [f for f in files if _is_source_file(f["filename"])]
-    test_files = [f for f in files if _is_test_file(f["filename"])]
-
-    test_filenames = [f["filename"] for f in test_files]
+    test_files_in_pr = [f["filename"] for f in files if _is_test_file(f["filename"])]
 
     for src in source_files:
         filename = src["filename"]
         patch = src.get("patch", "")
 
-        # Find related test files (changed in this PR OR existing in repo paths)
-        related = find_related_test_files(filename, all_filenames)
-        # Filter to ones we have evidence exist (in the PR or matching naming)
-        related = [r for r in related if r != filename]
+        # Look for related test files
+        expected_paths = expected_test_paths(filename)
+        related = []
 
-        # Extract functions that were added/modified
+        # Check if any test file in this PR matches expected paths
+        for test_path in expected_paths:
+            for tf in test_files_in_pr:
+                if test_path == tf or PurePosixPath(tf).stem == PurePosixPath(filename).stem + ".test":
+                    related.append(tf)
+
+        # Also: any test file that mentions this source file's name
+        src_name = PurePosixPath(filename).stem
+        for tf in test_files_in_pr:
+            if src_name in tf and tf not in related:
+                related.append(tf)
+
         modified_funcs = extract_added_functions(patch, filename)
+        critical = is_critical_path(filename)
 
-        # Determine coverage status
+        # Coverage logic:
         if related:
-            coverage_status = "covered"  # Has tests in same PR or naming match
-        elif modified_funcs:
-            coverage_status = "uncovered"  # New code, no test files found
+            coverage_status = "covered"
+        elif not modified_funcs:
+            # No new functions added — just minor changes, partial coverage
+            coverage_status = "partial"
+        elif critical:
+            # Critical code with no tests = UNCOVERED (red flag)
+            coverage_status = "uncovered"
         else:
+            # Non-critical code without explicit test files
             coverage_status = "partial"
 
         impacts.append(TestImpact(
@@ -153,13 +137,13 @@ def analyze_impact(files: List[Dict[str, Any]]) -> List[TestImpact]:
             modified_functions=modified_funcs,
             has_existing_tests=len(related) > 0,
             test_coverage_status=coverage_status,
+            is_critical_path=critical,
         ))
 
     return impacts
 
 
 def _is_source_file(filename: str) -> bool:
-    """Is this a source code file (not a test)?"""
     if _is_test_file(filename):
         return False
     code_exts = ('.js', '.jsx', '.ts', '.tsx', '.mjs', '.py', '.java', '.go', '.rb', '.php', '.cs', '.cpp', '.rs')
@@ -167,7 +151,6 @@ def _is_source_file(filename: str) -> bool:
 
 
 def _is_test_file(filename: str) -> bool:
-    """Is this a test file?"""
     name_lower = filename.lower()
     return (
         '.test.' in name_lower or

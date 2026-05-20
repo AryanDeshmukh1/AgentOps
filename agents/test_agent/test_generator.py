@@ -1,4 +1,4 @@
-﻿"""
+"""
 AI-powered test generator using Gemini.
 """
 import re
@@ -82,7 +82,7 @@ async def generate_tests_for_file(filename, patch, functions, pipeline_id):
 
     try:
         client = get_gemini_client()
-        response = await client.generate_json(prompt, temperature=0.3)
+        response = await client.generate_json(prompt, use_light_model=True, temperature=0.3)
         tests_raw = response.get("tests", [])
         tests = [
             GeneratedTest(

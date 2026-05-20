@@ -1,4 +1,4 @@
-"""
+﻿"""
 TestAgent — Second agent in the AgentOps pipeline.
 Analyzes test impact and generates tests for uncovered code.
 """
@@ -14,69 +14,56 @@ logger = get_logger(__name__)
 
 
 async def run_test_analysis(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Run TestAgent on a PR.
-
-    Steps:
-    1. Analyze test impact (deterministic)
-    2. Generate tests for uncovered functions (AI)
-    3. Calculate test coverage score
-    4. Return report
-
-    Args:
-        pipeline_data: Pipeline payload with files
-
-    Returns:
-        Test report dict
-    """
     pipeline_id = pipeline_data["pipeline_id"]
     files = pipeline_data["files"]
 
     logger.info(f"[{pipeline_id}] TestAgent starting on {len(files)} file(s)")
     start_time = time.time()
 
-    # Step 1: Impact analysis (no AI, deterministic)
     impacts = analyze_impact(files)
     logger.info(f"[{pipeline_id}] Impact analysis: {len(impacts)} source file(s) analyzed")
 
-    # Step 2: Generate tests for uncovered functions
-    all_generated_tests: List[GeneratedTest] = []
-    files_needing_tests = []
-
-    for impact in impacts:
-        if impact.test_coverage_status == "uncovered" and impact.modified_functions:
-            files_needing_tests.append(impact)
+    # Only generate tests for files that genuinely need them
+    files_needing_tests = [
+        i for i in impacts
+        if i.test_coverage_status == "uncovered" and i.modified_functions
+    ]
+    # Also generate for critical paths even if "partial"
+    files_needing_tests += [
+        i for i in impacts
+        if i.is_critical_path and i.test_coverage_status == "partial" and i.modified_functions
+    ]
+    # Deduplicate
+    files_needing_tests = list({i.source_file: i for i in files_needing_tests}.values())
 
     logger.info(f"[{pipeline_id}] Files needing AI test generation: {len(files_needing_tests)}")
 
+    all_generated_tests: List[GeneratedTest] = []
     for impact in files_needing_tests:
-        # Find the file in original files list to get the patch
         file_data = next((f for f in files if f["filename"] == impact.source_file), None)
         if not file_data:
             continue
 
+        # Limit to top 3 functions per file to control quota usage
+        top_functions = impact.modified_functions[:3]
+
         result = await generate_tests_for_file(
             filename=impact.source_file,
             patch=file_data.get("patch", ""),
-            functions=impact.modified_functions,
+            functions=top_functions,
             pipeline_id=pipeline_id,
         )
-
         all_generated_tests.extend(result.get("tests", []))
 
-    # Step 3: Calculate metrics
-    total_source_files = sum(1 for i in impacts)
-    covered_files = sum(1 for i in impacts if i.has_existing_tests)
-    uncovered_files = sum(1 for i in impacts if i.test_coverage_status == "uncovered")
-
     coverage_score = _calculate_coverage_score(impacts, len(all_generated_tests))
-
-    # Test pass rate is simulated for now (we'd actually run tests in a later iteration)
-    # For now: assume generated tests would pass at typical AI-generated rate ~85%
     simulated_pass_rate = 100 if not all_generated_tests else 85
 
-    # Decision
-    decision = _determine_decision(coverage_score, simulated_pass_rate, files_needing_tests)
+    total_source_files = len(impacts)
+    covered_files = sum(1 for i in impacts if i.has_existing_tests)
+    uncovered_files = sum(1 for i in impacts if i.test_coverage_status == "uncovered")
+    critical_files = sum(1 for i in impacts if i.is_critical_path)
+
+    decision = _determine_decision(coverage_score, impacts)
 
     duration_ms = int((time.time() - start_time) * 1000)
 
@@ -88,6 +75,7 @@ async def run_test_analysis(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
             "total_source_files": total_source_files,
             "covered_files": covered_files,
             "uncovered_files": uncovered_files,
+            "critical_files": critical_files,
             "tests_generated": len(all_generated_tests),
         },
         "impacts": [asdict(i) for i in impacts],
@@ -109,32 +97,45 @@ async def run_test_analysis(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
 
 def _calculate_coverage_score(impacts: List[TestImpact], generated_count: int) -> int:
     """
-    Score coverage from 0-100.
-    - 100: All changed source files have tests
-    - 50: Half have tests
-    - 0: No tests for any changed source
-    Bonus +10 if generated tests fill gaps.
+    More forgiving scoring:
+    - 100: All files have existing tests
+    - 75: Files don't need tests (no new functions, partial status)
+    - 60: Uncovered but AI generated suggestions
+    - 30: Uncovered + critical path
     """
     if not impacts:
-        return 100  # No source files = nothing to test
+        return 100
 
+    total = len(impacts)
     covered = sum(1 for i in impacts if i.has_existing_tests)
-    base_score = int((covered / len(impacts)) * 100)
+    partial = sum(1 for i in impacts if i.test_coverage_status == "partial")
+    uncovered_critical = sum(1 for i in impacts if i.test_coverage_status == "uncovered" and i.is_critical_path)
+    uncovered_normal = sum(1 for i in impacts if i.test_coverage_status == "uncovered" and not i.is_critical_path)
+
+    score = (
+        (covered * 100) +
+        (partial * 75) +
+        (uncovered_normal * 50) +
+        (uncovered_critical * 20)
+    ) / total
 
     # Bonus for AI-generated tests filling gaps
     if generated_count > 0:
-        base_score = min(100, base_score + 10)
+        score = min(100, score + 10)
 
-    return base_score
+    return int(score)
 
 
-def _determine_decision(
-    coverage_score: int,
-    pass_rate: int,
-    needs_tests: List[TestImpact],
-) -> str:
-    """Decide whether the PR passes test checks."""
-    if coverage_score >= 80 and pass_rate >= 80:
+def _determine_decision(coverage_score: int, impacts: List[TestImpact]) -> str:
+    """Smarter decision logic."""
+    has_uncovered_critical = any(
+        i.test_coverage_status == "uncovered" and i.is_critical_path
+        for i in impacts
+    )
+
+    if has_uncovered_critical:
+        return "REQUEST_TESTS"
+    elif coverage_score >= 80:
         return "PASS"
     elif coverage_score >= 60:
         return "PASS_WITH_WARNINGS"

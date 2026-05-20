@@ -6,7 +6,7 @@ import { createServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
 import dotenv from 'dotenv';
 import webhookRoutes from './routes/webhooks.js';
-
+import pipelineRoutes from './routes/pipelines.js';
 import healthRoutes from './routes/health.js';
 import logger from './utils/logger.js';
 
@@ -42,6 +42,8 @@ app.use(morgan('dev'));
 
 // Routes
 app.use('/api/webhooks', webhookRoutes);
+app.use('/api/health', healthRoutes);
+app.use('/api/pipelines', pipelineRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
