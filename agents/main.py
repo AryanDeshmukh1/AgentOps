@@ -49,30 +49,17 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {
-        "name": "AgentOps Agent System",
-        "version": "0.1.0",
-        "status": "running",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    }
+    return {"name": "AgentOps Agent System", "version": "0.1.0", "status": "running"}
 
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "healthy",
-        "service": "agentops-agents",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    }
+    return {"status": "healthy", "service": "agentops-agents"}
 
 
 @app.get("/health/deep")
 async def health_deep():
-    return {
-        "status": "healthy",
-        "service": "agentops-agents",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    }
+    return {"status": "healthy", "service": "agentops-agents"}
 
 
 class FileChange(BaseModel):
@@ -109,53 +96,51 @@ async def receive_review_request(request: ReviewRequest):
     pipeline_data = request.model_dump()
 
     from review_agent.agent import run_review
-    from review_agent.github_formatter import format_review_comment
+    from review_agent.github_formatter import format_combined_report
+    from test_agent.agent import run_test_analysis
     from shared.dynamodb_service import get_dynamodb_service
 
-    # Save pipeline record to DynamoDB
     db = get_dynamodb_service()
     await db.save_pipeline(pipeline_data)
 
     try:
-        report = await run_review(pipeline_data)
+        # ============ ReviewAgent ============
+        review_report = await run_review(pipeline_data)
 
-        logger.info("=" * 60)
-        logger.info(f"REVIEW COMPLETE: {request.pipeline_id}")
-        logger.info(f"  Decision: {report['decision']}")
-        logger.info(f"  Reason: {report['reason']}")
-        logger.info(f"  Scores:")
-        logger.info(f"    Overall:        {report['scores']['overall']}/100")
-        logger.info(f"    Security:       {report['scores']['security']}/100")
-        logger.info(f"    Code Quality:   {report['scores']['code_quality']}/100")
-        logger.info(f"    Performance:    {report['scores']['performance']}/100")
-        logger.info(f"    Architecture:   {report['scores']['architecture']}/100")
-        logger.info(f"    Test Impact:    {report['scores']['test_impact']}/100")
-        logger.info(f"    Documentation:  {report['scores']['documentation']}/100")
-        logger.info(f"  Findings: {report['summary']}")
+        logger.info(f"[REVIEW DONE] {request.pipeline_id} — decision={review_report['decision']}, score={review_report['scores']['overall']}")
 
-        if report.get("findings"):
-            logger.info(f"  Top findings:")
-            for f in report["findings"][:5]:
-                logger.info(f"    [{f['severity'].upper()}] {f['file']}:{f['line']} - {f['title']}")
-        logger.info("=" * 60)
+        await db.save_agent_decision(request.pipeline_id, "ReviewAgent", review_report)
 
-        # Save agent decision to DynamoDB
-        await db.save_agent_decision(request.pipeline_id, "ReviewAgent", report)
+        # ============ TestAgent ============
+        # Only run TestAgent if Review didn't block
+        test_report = None
+        if review_report["decision"] != "BLOCK":
+            logger.info(f"[{request.pipeline_id}] Handing off to TestAgent...")
+            test_report = await run_test_analysis(pipeline_data)
+            logger.info(f"[TEST DONE] {request.pipeline_id} — decision={test_report['decision']}, coverage={test_report['scores']['coverage']}")
+            await db.save_agent_decision(request.pipeline_id, "TestAgent", test_report)
+        else:
+            logger.info(f"[{request.pipeline_id}] Skipping TestAgent (Review blocked the pipeline)")
 
-        # Update pipeline status
+        # ============ Update Pipeline Status ============
+        final_decision = review_report["decision"]
+        if test_report and test_report["decision"] == "REQUEST_TESTS":
+            final_decision = "REQUEST_CHANGES"
+
         await db.update_pipeline_status(
             request.pipeline_id,
             request.timestamp,
             {
-                "status": "review_complete",
-                "review_score": report["scores"]["overall"],
-                "decision": report["decision"],
-                "total_findings": sum(report["summary"].values()),
+                "status": "complete",
+                "review_score": review_report["scores"]["overall"],
+                "decision": final_decision,
+                "total_findings": sum(review_report["summary"].values()),
+                "coverage_score": test_report["scores"]["coverage"] if test_report else None,
             },
         )
 
-        # Format and post comment to GitHub via the backend
-        comment_body = format_review_comment(report)
+        # ============ Post Combined Comment ============
+        comment_body = format_combined_report(review_report, test_report)
         backend_url = os.getenv("BACKEND_URL", "http://backend:4000")
 
         try:
@@ -167,30 +152,28 @@ async def receive_review_request(request: ReviewRequest):
                         "pr_number": request.pr_number,
                         "comment": comment_body,
                         "head_sha": request.head_sha,
-                        "decision": report["decision"],
+                        "decision": final_decision,
                     },
                 )
                 if response.status_code == 200:
                     logger.info(f"[{request.pipeline_id}] Comment posted on GitHub")
                 else:
-                    logger.warning(f"[{request.pipeline_id}] Failed to post comment: HTTP {response.status_code}")
+                    logger.warning(f"[{request.pipeline_id}] Comment post HTTP {response.status_code}")
         except Exception as post_err:
             logger.error(f"[{request.pipeline_id}] Comment post failed: {post_err}")
 
         return {
             "status": "completed",
             "pipeline_id": request.pipeline_id,
-            "report": report,
+            "review_report": review_report,
+            "test_report": test_report,
         }
+
     except Exception as e:
-        logger.error(f"[{request.pipeline_id}] Review failed: {e}", exc_info=True)
+        logger.error(f"[{request.pipeline_id}] Pipeline failed: {e}", exc_info=True)
         await db.update_pipeline_status(
             request.pipeline_id,
             request.timestamp,
             {"status": "failed", "error": str(e)[:500]},
         )
-        return {
-            "status": "error",
-            "pipeline_id": request.pipeline_id,
-            "error": str(e),
-        }
+        return {"status": "error", "pipeline_id": request.pipeline_id, "error": str(e)}

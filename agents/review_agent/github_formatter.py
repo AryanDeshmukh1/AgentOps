@@ -1,7 +1,7 @@
 """
 Formats review reports as GitHub Markdown comments.
 """
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 
 def format_severity_badge(severity: str) -> str:
@@ -125,6 +125,75 @@ def format_review_comment(report: Dict[str, Any]) -> str:
 
     return "\n".join(lines)
 
+
+def format_combined_report(review_report: Dict[str, Any], test_report: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Combined GitHub comment showing both Review + Test results.
+    """
+    # Start with the review report
+    comment = format_review_comment(review_report)
+
+    if not test_report:
+        return comment
+
+    # Append test section
+    test_summary = test_report.get("summary", {})
+    test_scores = test_report.get("scores", {})
+    generated = test_report.get("generated_tests", [])
+
+    lines = [
+        "",
+        "---",
+        "",
+        "## 🧪 AgentOps Test Analysis",
+        "",
+        f"### Decision: **{test_report.get('decision', 'PASS')}**",
+        "",
+        "### 📊 Test Metrics",
+        "",
+        f"| Metric | Value |",
+        f"|--------|-------|",
+        f"| Coverage Score | {format_score_bar(test_scores.get('coverage', 0))} |",
+        f"| Source files changed | {test_summary.get('total_source_files', 0)} |",
+        f"| Files with existing tests | {test_summary.get('covered_files', 0)} |",
+        f"| Files needing tests | {test_summary.get('uncovered_files', 0)} |",
+        f"| AI-generated tests | {test_summary.get('tests_generated', 0)} |",
+        "",
+    ]
+
+    if generated:
+        lines.extend([
+            "### 🤖 AI-Generated Test Cases",
+            "",
+            f"<details open>",
+            f"<summary>Click to view {len(generated)} suggested tests</summary>",
+            "",
+        ])
+
+        # Group by target function
+        by_function = {}
+        for t in generated:
+            func = t.get("target_function", "unknown")
+            by_function.setdefault(func, []).append(t)
+
+        for func, tests in by_function.items():
+            lines.append(f"#### `{func}()`")
+            lines.append("")
+            for test in tests[:3]:  # Limit to 3 per function to keep comment clean
+                lines.extend([
+                    f"**{test.get('name', 'Test')}** *({test.get('category', 'happy_path')})*",
+                    "",
+                    f"> {test.get('description', '')}",
+                    "",
+                    "```javascript",
+                    test.get("code", "").strip(),
+                    "```",
+                    "",
+                ])
+
+        lines.extend(["</details>", ""])
+
+    return comment + "\n".join(lines)
 
 def _format_single_finding(finding: Dict[str, Any]) -> List[str]:
     """Format a single finding as Markdown."""
