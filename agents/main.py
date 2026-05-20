@@ -1,5 +1,6 @@
 ﻿"""
 AgentOps Agent System — FastAPI server hosting the multi-agent orchestrator.
+Now powered by LangGraph state machine.
 """
 import os
 import logging
@@ -27,14 +28,17 @@ async def lifespan(app: FastAPI):
     logger.info("AgentOps Agent System starting up...")
     logger.info(f"AWS Region: {os.getenv('AWS_REGION', 'not_set')}")
     logger.info(f"Gemini Model: {os.getenv('GEMINI_MODEL_PRIMARY', 'not_set')}")
+    # Warm up the graph
+    from orchestrator.graph import get_pipeline_graph
+    get_pipeline_graph()
     yield
     logger.info("AgentOps Agent System shutting down...")
 
 
 app = FastAPI(
     title="AgentOps Agent System",
-    description="Multi-agent AI orchestrator for CI/CD pipelines",
-    version="0.1.0",
+    description="Multi-agent AI orchestrator powered by LangGraph",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -49,7 +53,7 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"name": "AgentOps Agent System", "version": "0.1.0", "status": "running"}
+    return {"name": "AgentOps Agent System", "version": "0.2.0", "status": "running"}
 
 
 @app.get("/health")
@@ -86,6 +90,9 @@ class ReviewRequest(BaseModel):
 
 @app.post("/api/review")
 async def receive_review_request(request: ReviewRequest):
+    """
+    Entry point for pipelines. Hands off to the LangGraph orchestrator.
+    """
     logger.info("=" * 60)
     logger.info(f"NEW PIPELINE: {request.pipeline_id}")
     logger.info(f"  Repo: {request.repo}")
@@ -95,76 +102,60 @@ async def receive_review_request(request: ReviewRequest):
 
     pipeline_data = request.model_dump()
 
-    from review_agent.agent import run_review
+    from orchestrator.graph import run_pipeline
     from review_agent.github_formatter import format_combined_report
-    from test_agent.agent import run_test_analysis
     from shared.dynamodb_service import get_dynamodb_service
 
+    # Save initial pipeline record
     db = get_dynamodb_service()
     await db.save_pipeline(pipeline_data)
 
     try:
-        # ============ ReviewAgent ============
-        review_report = await run_review(pipeline_data)
+        # Run the LangGraph pipeline
+        final_state = await run_pipeline(pipeline_data)
 
-        logger.info(f"[REVIEW DONE] {request.pipeline_id} — decision={review_report['decision']}, score={review_report['scores']['overall']}")
+        review_report = final_state.get("review_report")
+        test_report = final_state.get("test_report")
+        final_decision = final_state.get("final_decision", "UNKNOWN")
 
-        await db.save_agent_decision(request.pipeline_id, "ReviewAgent", review_report)
+        logger.info("=" * 60)
+        logger.info(f"PIPELINE COMPLETE: {request.pipeline_id}")
+        logger.info(f"  Final Decision: {final_decision}")
+        if review_report:
+            logger.info(f"  Review Score: {review_report['scores']['overall']}/100")
+        if test_report:
+            logger.info(f"  Coverage Score: {test_report['scores']['coverage']}/100")
+            logger.info(f"  Tests Generated: {test_report['summary']['tests_generated']}")
+        logger.info("=" * 60)
 
-        # ============ TestAgent ============
-        # Only run TestAgent if Review didn't block
-        test_report = None
-        if review_report["decision"] != "BLOCK":
-            logger.info(f"[{request.pipeline_id}] Handing off to TestAgent...")
-            test_report = await run_test_analysis(pipeline_data)
-            logger.info(f"[TEST DONE] {request.pipeline_id} — decision={test_report['decision']}, coverage={test_report['scores']['coverage']}")
-            await db.save_agent_decision(request.pipeline_id, "TestAgent", test_report)
-        else:
-            logger.info(f"[{request.pipeline_id}] Skipping TestAgent (Review blocked the pipeline)")
+        # Post combined comment to GitHub via backend
+        if review_report:
+            comment_body = format_combined_report(review_report, test_report)
+            backend_url = os.getenv("BACKEND_URL", "http://backend:4000")
 
-        # ============ Update Pipeline Status ============
-        final_decision = review_report["decision"]
-        if test_report and test_report["decision"] == "REQUEST_TESTS":
-            final_decision = "REQUEST_CHANGES"
-
-        await db.update_pipeline_status(
-            request.pipeline_id,
-            request.timestamp,
-            {
-                "status": "complete",
-                "review_score": review_report["scores"]["overall"],
-                "decision": final_decision,
-                "total_findings": sum(review_report["summary"].values()),
-                "coverage_score": test_report["scores"]["coverage"] if test_report else None,
-            },
-        )
-
-        # ============ Post Combined Comment ============
-        comment_body = format_combined_report(review_report, test_report)
-        backend_url = os.getenv("BACKEND_URL", "http://backend:4000")
-
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.post(
-                    f"{backend_url}/api/webhooks/post-review",
-                    json={
-                        "repo": request.repo,
-                        "pr_number": request.pr_number,
-                        "comment": comment_body,
-                        "head_sha": request.head_sha,
-                        "decision": final_decision,
-                    },
-                )
-                if response.status_code == 200:
-                    logger.info(f"[{request.pipeline_id}] Comment posted on GitHub")
-                else:
-                    logger.warning(f"[{request.pipeline_id}] Comment post HTTP {response.status_code}")
-        except Exception as post_err:
-            logger.error(f"[{request.pipeline_id}] Comment post failed: {post_err}")
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    response = await client.post(
+                        f"{backend_url}/api/webhooks/post-review",
+                        json={
+                            "repo": request.repo,
+                            "pr_number": request.pr_number,
+                            "comment": comment_body,
+                            "head_sha": request.head_sha,
+                            "decision": final_decision,
+                        },
+                    )
+                    if response.status_code == 200:
+                        logger.info(f"[{request.pipeline_id}] Comment posted on GitHub")
+                    else:
+                        logger.warning(f"[{request.pipeline_id}] Comment post HTTP {response.status_code}")
+            except Exception as post_err:
+                logger.error(f"[{request.pipeline_id}] Comment post failed: {post_err}")
 
         return {
             "status": "completed",
             "pipeline_id": request.pipeline_id,
+            "final_decision": final_decision,
             "review_report": review_report,
             "test_report": test_report,
         }
