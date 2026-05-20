@@ -1,9 +1,7 @@
-"""
+﻿"""
 DynamoDB service for persisting pipeline state and agent decisions.
-Each pipeline gets saved so we can later display history in the dashboard.
 """
 import os
-import json
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from decimal import Decimal
@@ -17,45 +15,35 @@ logger = get_logger(__name__)
 
 
 def _convert_floats(obj):
-    """DynamoDB doesn't accept floats — convert to Decimal."""
     if isinstance(obj, list):
         return [_convert_floats(item) for item in obj]
     elif isinstance(obj, dict):
         return {k: _convert_floats(v) for k, v in obj.items()}
     elif isinstance(obj, float):
         return Decimal(str(obj))
-    else:
-        return obj
+    return obj
 
 
 def _restore_decimals(obj):
-    """Convert Decimal back to float/int for JSON serialization."""
     if isinstance(obj, list):
         return [_restore_decimals(item) for item in obj]
     elif isinstance(obj, dict):
         return {k: _restore_decimals(v) for k, v in obj.items()}
     elif isinstance(obj, Decimal):
         return float(obj) if obj % 1 != 0 else int(obj)
-    else:
-        return obj
+    return obj
 
 
 class DynamoDBService:
     def __init__(self):
         region = os.getenv("AWS_REGION", "ca-central-1")
         self.dynamodb = boto3.resource("dynamodb", region_name=region)
-
-        self.pipelines_table = self.dynamodb.Table(
-            os.getenv("DYNAMODB_PIPELINES_TABLE", "AgentOps-Pipelines")
-        )
-        self.decisions_table = self.dynamodb.Table(
-            os.getenv("DYNAMODB_AGENT_DECISIONS_TABLE", "AgentOps-AgentDecisions")
-        )
-
+        self.pipelines_table = self.dynamodb.Table(os.getenv("DYNAMODB_PIPELINES_TABLE", "AgentOps-Pipelines"))
+        self.decisions_table = self.dynamodb.Table(os.getenv("DYNAMODB_AGENT_DECISIONS_TABLE", "AgentOps-AgentDecisions"))
+        self.approvals_table = self.dynamodb.Table(os.getenv("DYNAMODB_APPROVALS_TABLE", "AgentOps-Approvals"))
         logger.info(f"DynamoDB service initialized (region={region})")
 
-    async def save_pipeline(self, pipeline_data: Dict[str, Any]) -> bool:
-        """Save initial pipeline record when a PR comes in."""
+    async def save_pipeline(self, pipeline_data):
         try:
             item = {
                 "pipeline_id": pipeline_data["pipeline_id"],
@@ -77,33 +65,20 @@ class DynamoDBService:
             logger.error(f"Failed to save pipeline: {e}")
             return False
 
-    async def update_pipeline_status(
-        self,
-        pipeline_id: str,
-        created_at: str,
-        updates: Dict[str, Any],
-    ) -> bool:
-        """Update pipeline status after agent completes."""
+    async def update_pipeline_status(self, pipeline_id, created_at, updates):
         try:
-            # Build update expression
             update_parts = []
-            expression_values = {}
-            expression_names = {}
-
+            ev = {}
+            en = {}
             for key, value in updates.items():
-                placeholder = f":{key}"
-                name_placeholder = f"#{key}"
-                update_parts.append(f"{name_placeholder} = {placeholder}")
-                expression_values[placeholder] = _convert_floats(value)
-                expression_names[name_placeholder] = key
-
-            update_expression = "SET " + ", ".join(update_parts)
-
+                update_parts.append(f"#{key} = :{key}")
+                ev[f":{key}"] = _convert_floats(value)
+                en[f"#{key}"] = key
             self.pipelines_table.update_item(
                 Key={"pipeline_id": pipeline_id, "created_at": created_at},
-                UpdateExpression=update_expression,
-                ExpressionAttributeValues=expression_values,
-                ExpressionAttributeNames=expression_names,
+                UpdateExpression="SET " + ", ".join(update_parts),
+                ExpressionAttributeValues=ev,
+                ExpressionAttributeNames=en,
             )
             logger.info(f"Updated pipeline {pipeline_id}: {list(updates.keys())}")
             return True
@@ -111,17 +86,10 @@ class DynamoDBService:
             logger.error(f"Failed to update pipeline: {e}")
             return False
 
-    async def save_agent_decision(
-        self,
-        pipeline_id: str,
-        agent_name: str,
-        report: Dict[str, Any],
-    ) -> bool:
-        """Save the full agent decision report."""
+    async def save_agent_decision(self, pipeline_id, agent_name, report):
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
             agent_timestamp = f"{agent_name}#{timestamp}"
-
             item = {
                 "pipeline_id": pipeline_id,
                 "agent_timestamp": agent_timestamp,
@@ -129,7 +97,6 @@ class DynamoDBService:
                 "timestamp": timestamp,
                 "report": _convert_floats(report),
             }
-
             self.decisions_table.put_item(Item=item)
             logger.info(f"Saved {agent_name} decision for {pipeline_id}")
             return True
@@ -137,55 +104,35 @@ class DynamoDBService:
             logger.error(f"Failed to save agent decision: {e}")
             return False
 
-    async def get_pipeline(self, pipeline_id: str, created_at: str) -> Optional[Dict[str, Any]]:
-        """Retrieve a pipeline record by ID."""
+    async def save_approval_request(self, pipeline_id, risk_assessment, review_summary):
         try:
-            response = self.pipelines_table.get_item(
-                Key={"pipeline_id": pipeline_id, "created_at": created_at}
-            )
-            item = response.get("Item")
-            return _restore_decimals(item) if item else None
+            timestamp = datetime.now(timezone.utc).isoformat()
+            approval_id = f"approval_{pipeline_id}_{int(datetime.now().timestamp())}"
+            item = {
+                "pipeline_id": pipeline_id,
+                "approval_id": approval_id,
+                "created_at": timestamp,
+                "risk_level": risk_assessment["risk_level"],
+                "reason": risk_assessment["reason"],
+                "critical_files": risk_assessment.get("critical_files", []),
+                "review_summary": _convert_floats(review_summary),
+                "status": "pending",
+                "approved_by": None,
+                "approved_at": None,
+                "comment": None,
+            }
+            self.approvals_table.put_item(Item=item)
+            logger.info(f"Created approval request {approval_id} for {pipeline_id}")
+            return approval_id
         except ClientError as e:
-            logger.error(f"Failed to get pipeline: {e}")
-            return None
-
-    async def check_existing_review_for_sha(
-        self,
-        repo: str,
-        head_sha: str,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Check if we've already reviewed this exact commit SHA.
-        Used to skip re-running expensive AI analysis on the same code.
-        """
-        try:
-            response = self.decisions_table.scan(
-                FilterExpression="contains(#report.#repo, :repo) AND #report.#head_sha = :sha AND #report.#agent = :agent",
-                ExpressionAttributeNames={
-                    "#report": "report",
-                    "#repo": "repo",
-                    "#head_sha": "head_sha",
-                    "#agent": "agent",
-                },
-                ExpressionAttributeValues={
-                    ":repo": repo,
-                    ":sha": head_sha,
-                    ":agent": "ReviewAgent",
-                },
-                Limit=1,
-            )
-            items = response.get("Items", [])
-            return _restore_decimals(items[0]) if items else None
-        except ClientError as e:
-            logger.warning(f"Could not check existing review: {e}")
-            return None
+            logger.error(f"Failed to save approval: {e}")
+            return ""
 
 
-# Global singleton
-_service: Optional[DynamoDBService] = None
+_service = None
 
 
-def get_dynamodb_service() -> DynamoDBService:
+def get_dynamodb_service():
     global _service
     if _service is None:
         _service = DynamoDBService()

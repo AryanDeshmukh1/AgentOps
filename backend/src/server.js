@@ -9,6 +9,7 @@ import webhookRoutes from './routes/webhooks.js';
 import pipelineRoutes from './routes/pipelines.js';
 import healthRoutes from './routes/health.js';
 import logger from './utils/logger.js';
+import approvalRoutes from './routes/approvals.js';
 
 dotenv.config();
 
@@ -44,6 +45,7 @@ app.use(morgan('dev'));
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api/pipelines', pipelineRoutes);
+app.use('/api/approvals', approvalRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
