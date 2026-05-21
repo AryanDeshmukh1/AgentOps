@@ -1,0 +1,9 @@
+{
+  "pipeline_id": {"S": "test_pipeline_001"},
+  "approval_id": {"S": "approval_test_001"},
+  "created_at": {"S": "2026-05-21T10:28:21Z"},
+  "risk_level": {"S": "hard"},
+  "reason": {"S": "Test approval for state machine"},
+  "status": {"S": "pending"},
+  "review_summary": {"M": {"decision": {"S": "REQUEST_CHANGES"}}}
+}

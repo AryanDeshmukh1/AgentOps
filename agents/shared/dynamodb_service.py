@@ -41,6 +41,9 @@ class DynamoDBService:
         self.pipelines_table = self.dynamodb.Table(os.getenv("DYNAMODB_PIPELINES_TABLE", "AgentOps-Pipelines"))
         self.decisions_table = self.dynamodb.Table(os.getenv("DYNAMODB_AGENT_DECISIONS_TABLE", "AgentOps-AgentDecisions"))
         self.approvals_table = self.dynamodb.Table(os.getenv("DYNAMODB_APPROVALS_TABLE", "AgentOps-Approvals"))
+        self.approval_events_table = self.dynamodb.Table(
+            os.getenv("DYNAMODB_APPROVAL_EVENTS_TABLE", "AgentOps-ApprovalEvents")
+        )
         logger.info(f"DynamoDB service initialized (region={region})")
 
     async def save_pipeline(self, pipeline_data):
@@ -127,9 +130,97 @@ class DynamoDBService:
         except ClientError as e:
             logger.error(f"Failed to save approval: {e}")
             return ""
+    
 
+    async def get_approval(self, pipeline_id, approval_id):
+        try:
+            result = self.approvals_table.get_item(
+                Key={"pipeline_id": pipeline_id, "approval_id": approval_id}
+            )
+            item = result.get("Item")
+            return _restore_decimals(item) if item else None
+        except ClientError as e:
+            logger.error(f"Failed to get approval: {e}")
+            return None
+
+    async def transition_approval(
+        self,
+        pipeline_id,
+        approval_id,
+        new_status,
+        actor,
+        comment="",
+        expected_status="pending",
+    ):
+        """Atomic conditional update — prevents double-approval."""
+        try:
+            self.approvals_table.update_item(
+                Key={"pipeline_id": pipeline_id, "approval_id": approval_id},
+                UpdateExpression=(
+                    "SET #status = :new, approved_by = :actor, "
+                    "approved_at = :now, #cmt = :comment"
+                ),
+                ConditionExpression="#status = :expected",
+                ExpressionAttributeNames={"#status": "status", "#cmt": "comment"},
+                ExpressionAttributeValues={
+                    ":new": new_status,
+                    ":expected": expected_status,
+                    ":actor": actor,
+                    ":now": datetime.now(timezone.utc).isoformat(),
+                    ":comment": comment,
+                },
+            )
+            logger.info(
+                f"Transitioned approval {approval_id}: {expected_status} -> {new_status} by {actor}"
+            )
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                logger.warning(
+                    f"Approval transition rejected (state mismatch): {approval_id}"
+                )
+                return False
+            logger.error(f"Failed to transition approval: {e}")
+            return False
+
+    async def save_approval_event(self, event):
+        try:
+            self.approval_events_table.put_item(Item=_convert_floats(event))
+            logger.info(
+                f"Audit {event['approval_id']}: {event['from_state']} -> {event['to_state']} by {event['actor']}"
+            )
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to save approval event: {e}")
+            return False
+
+    async def list_approval_events(self, approval_id):
+        try:
+            from boto3.dynamodb.conditions import Key
+            result = self.approval_events_table.query(
+                KeyConditionExpression=Key("approval_id").eq(approval_id),
+                ScanIndexForward=True,
+            )
+            return _restore_decimals(result.get("Items", []))
+        except ClientError as e:
+            logger.error(f"Failed to list approval events: {e}")
+            return []
+
+    async def list_pending_approvals(self):
+        try:
+            result = self.approvals_table.scan(
+                FilterExpression="#status = :pending",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={":pending": "pending"},
+            )
+            return _restore_decimals(result.get("Items", []))
+        except ClientError as e:
+            logger.error(f"Failed to list pending approvals: {e}")
+            return []
 
 _service = None
+
+
 
 
 def get_dynamodb_service():
