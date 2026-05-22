@@ -2,7 +2,9 @@
 AgentOps Pipeline Orchestrator using LangGraph with approval gateway.
 """
 from typing import TypedDict, List, Dict, Any, Optional, Literal
+from deploy_agent.agent import run_deploy
 from langgraph.graph import StateGraph, END
+
 
 from review_agent.agent import run_review
 from test_agent.agent import run_test_analysis
@@ -104,6 +106,25 @@ async def approval_node(state):
         return {**state, "risk_assessment": risk, "current_agent": "ApprovalGate"}
 
 
+async def deploy_node(state):
+    pipeline_id = state["pipeline_id"]
+    logger.info(f"[GRAPH] Entering deploy_node for {pipeline_id}")
+    pipeline_data = {
+        "pipeline_id": state["pipeline_id"],
+        "repo": state["repo"],
+        "pr_number": state["pr_number"],
+        "head_sha": state["head_sha"],
+    }
+    try:
+        report = await run_deploy(pipeline_data, approval_id=state.get("approval_id"))
+        db = get_dynamodb_service()
+        await db.save_agent_decision(pipeline_id, "DeployAgent", report)
+        return {**state, "deploy_report": report, "current_agent": "DeployAgent"}
+    except Exception as e:
+        logger.error(f"[GRAPH] deploy_node failed: {e}", exc_info=True)
+        return {**state, "status": "failed", "error": str(e)}
+
+
 async def finalize_node(state):
     pipeline_id = state["pipeline_id"]
     logger.info(f"[GRAPH] Entering finalize_node for {pipeline_id}")
@@ -121,6 +142,11 @@ async def finalize_node(state):
     if test:
         updates["coverage_score"] = test["scores"]["coverage"]
     risk = state.get("risk_assessment")
+    deploy = state.get("deploy_report")
+    if deploy:
+        updates["deployment_id"] = deploy.get("deployment_id")
+        updates["deploy_state"] = deploy.get("final_state")
+        updates["deploy_decision"] = deploy.get("decision")
     if risk:
         updates["risk_level"] = risk["risk_level"]
     await db.update_pipeline_status(pipeline_id, state["timestamp"], updates)
@@ -146,19 +172,37 @@ def route_after_test(state) -> Literal["approval", "finalize"]:
     return "approval"
 
 
+def route_after_approval(state) -> Literal["deploy", "finalize"]:
+    """
+    Day 13: Deploy only on auto-approved (low-risk) PRs.
+    Days 14+: also deploy on human-approved PRs (reading from approval state).
+    """
+    risk = state.get("risk_assessment") or {}
+    review = state.get("review_report") or {}
+    if review.get("decision") == "BLOCK":
+        logger.info("[GRAPH] Routing: BLOCK -> finalize (skip deploy)")
+        return "finalize"
+    if not risk.get("requires_approval"):
+        logger.info("[GRAPH] Routing: auto-approved -> deploy")
+        return "deploy"
+    # SOFT/HARD requiring approval — Day 13 stops here; Day 15+ resumes after approve
+    logger.info("[GRAPH] Routing: awaiting approval -> finalize (deploy deferred)")
+    return "finalize"
+
 def build_pipeline_graph():
     graph = StateGraph(PipelineState)
     graph.add_node("review", review_node)
     graph.add_node("test", test_node)
     graph.add_node("approval", approval_node)
+    graph.add_node("deploy", deploy_node)
     graph.add_node("finalize", finalize_node)
     graph.set_entry_point("review")
     graph.add_conditional_edges("review", route_after_review, {"test": "test", "finalize": "finalize"})
     graph.add_conditional_edges("test", route_after_test, {"approval": "approval", "finalize": "finalize"})
-    graph.add_edge("approval", "finalize")
+    graph.add_conditional_edges("approval", route_after_approval, {"deploy": "deploy", "finalize": "finalize"})
+    graph.add_edge("deploy", "finalize")
     graph.add_edge("finalize", END)
     return graph.compile()
-
 
 _compiled_graph = None
 
@@ -186,6 +230,7 @@ async def run_pipeline(pipeline_data):
         "test_report": None,
         "risk_assessment": None,
         "approval_id": None,
+        "deploy_report": None,
         "current_agent": "starting",
         "status": "running",
         "final_decision": None,

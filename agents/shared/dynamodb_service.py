@@ -38,13 +38,27 @@ class DynamoDBService:
     def __init__(self):
         region = os.getenv("AWS_REGION", "ca-central-1")
         self.dynamodb = boto3.resource("dynamodb", region_name=region)
-        self.pipelines_table = self.dynamodb.Table(os.getenv("DYNAMODB_PIPELINES_TABLE", "AgentOps-Pipelines"))
-        self.decisions_table = self.dynamodb.Table(os.getenv("DYNAMODB_AGENT_DECISIONS_TABLE", "AgentOps-AgentDecisions"))
-        self.approvals_table = self.dynamodb.Table(os.getenv("DYNAMODB_APPROVALS_TABLE", "AgentOps-Approvals"))
+        self.pipelines_table = self.dynamodb.Table(
+            os.getenv("DYNAMODB_PIPELINES_TABLE", "AgentOps-Pipelines")
+        )
+        self.decisions_table = self.dynamodb.Table(
+            os.getenv("DYNAMODB_AGENT_DECISIONS_TABLE", "AgentOps-AgentDecisions")
+        )
+        self.approvals_table = self.dynamodb.Table(
+            os.getenv("DYNAMODB_APPROVALS_TABLE", "AgentOps-Approvals")
+        )
         self.approval_events_table = self.dynamodb.Table(
             os.getenv("DYNAMODB_APPROVAL_EVENTS_TABLE", "AgentOps-ApprovalEvents")
         )
+        self.deployments_table = self.dynamodb.Table(
+            os.getenv("DYNAMODB_DEPLOYMENTS_TABLE", "AgentOps-Deployments")
+        )
+        self.deployment_events_table = self.dynamodb.Table(
+            os.getenv("DYNAMODB_DEPLOYMENT_EVENTS_TABLE", "AgentOps-DeploymentEvents")
+        )
         logger.info(f"DynamoDB service initialized (region={region})")
+
+    # ---------- Pipelines ----------
 
     async def save_pipeline(self, pipeline_data):
         try:
@@ -89,6 +103,8 @@ class DynamoDBService:
             logger.error(f"Failed to update pipeline: {e}")
             return False
 
+    # ---------- Agent Decisions ----------
+
     async def save_agent_decision(self, pipeline_id, agent_name, report):
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -106,6 +122,8 @@ class DynamoDBService:
         except ClientError as e:
             logger.error(f"Failed to save agent decision: {e}")
             return False
+
+    # ---------- Approvals ----------
 
     async def save_approval_request(self, pipeline_id, risk_assessment, review_summary):
         try:
@@ -130,7 +148,6 @@ class DynamoDBService:
         except ClientError as e:
             logger.error(f"Failed to save approval: {e}")
             return ""
-    
 
     async def get_approval(self, pipeline_id, approval_id):
         try:
@@ -218,9 +235,91 @@ class DynamoDBService:
             logger.error(f"Failed to list pending approvals: {e}")
             return []
 
+    # ---------- Deployments (Day 13+) ----------
+
+    async def save_deployment(self, pipeline_id, deployment_id, approval_id,
+                               repo, pr_number, head_sha):
+        try:
+            item = {
+                "pipeline_id": pipeline_id,
+                "deployment_id": deployment_id,
+                "approval_id": approval_id or "",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "repo": repo,
+                "pr_number": pr_number,
+                "head_sha": head_sha,
+                "status": "pending",
+                "blue_slot": None,
+                "green_slot": None,
+                "traffic_split": {"blue": 100, "green": 0},
+                "last_updated_by": "DeployAgent",
+            }
+            self.deployments_table.put_item(Item=_convert_floats(item))
+            logger.info(f"Saved deployment: {deployment_id}")
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to save deployment: {e}")
+            return False
+
+    async def get_deployment(self, pipeline_id, deployment_id):
+        try:
+            result = self.deployments_table.get_item(
+                Key={"pipeline_id": pipeline_id, "deployment_id": deployment_id}
+            )
+            item = result.get("Item")
+            return _restore_decimals(item) if item else None
+        except ClientError as e:
+            logger.error(f"Failed to get deployment: {e}")
+            return None
+
+    async def transition_deployment(self, pipeline_id, deployment_id, new_status,
+                                     actor, comment="", expected_status="pending"):
+        """Atomic conditional update — prevents invalid state transitions."""
+        try:
+            self.deployments_table.update_item(
+                Key={"pipeline_id": pipeline_id, "deployment_id": deployment_id},
+                UpdateExpression=(
+                    "SET #status = :new, last_updated_at = :now, "
+                    "last_updated_by = :actor, last_comment = :comment"
+                ),
+                ConditionExpression="#status = :expected",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":new": new_status,
+                    ":expected": expected_status,
+                    ":actor": actor,
+                    ":now": datetime.now(timezone.utc).isoformat(),
+                    ":comment": comment,
+                },
+            )
+            logger.info(
+                f"Transitioned deployment {deployment_id}: "
+                f"{expected_status} -> {new_status} by {actor}"
+            )
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                logger.warning(
+                    f"Deployment transition rejected (state mismatch): {deployment_id}"
+                )
+                return False
+            logger.error(f"Failed to transition deployment: {e}")
+            return False
+
+    async def save_deployment_event(self, event):
+        try:
+            self.deployment_events_table.put_item(Item=_convert_floats(event))
+            logger.info(
+                f"Deployment audit {event['deployment_id']}: "
+                f"{event['from_state']} -> {event['to_state']} by {event['actor']}"
+            )
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to save deployment event: {e}")
+            return False
+
+
 _service = None
-
-
 
 
 def get_dynamodb_service():
