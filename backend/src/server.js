@@ -10,6 +10,8 @@ import pipelineRoutes from './routes/pipelines.js';
 import healthRoutes from './routes/health.js';
 import logger from './utils/logger.js';
 import approvalRoutes from './routes/approvals.js';
+import deploymentRoutes from './routes/deployments.js';
+
 
 dotenv.config();
 
@@ -47,6 +49,7 @@ app.use('/api/health', healthRoutes);
 app.use('/health', healthRoutes);
 app.use('/api/pipelines', pipelineRoutes);
 app.use('/api/approvals', approvalRoutes);
+app.use('/api/deployments', deploymentRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {

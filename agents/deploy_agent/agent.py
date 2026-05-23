@@ -1,11 +1,12 @@
 """
 DeployAgent — orchestrates blue/green deployments.
 
-Day 15 scope:
+Day 16 scope:
     pending -> provisioning -> smoke_test -> ready_for_traffic_shift
             -> traffic_shifting (10/50/100) -> monitoring -> promoted
 
-Day 16 will add: auto-rollback on traffic-shift or monitoring failure.
+    On traffic_shifting or monitoring failure: auto-rollback to 100% blue,
+    transition to rolled_back, and notify the PR.
 """
 import asyncio
 import os
@@ -14,11 +15,18 @@ from datetime import datetime, timezone
 from typing import Dict, Any
 from uuid import uuid4
 
+
 from deploy_agent.deployment_state_machine import DeploymentState, build_event
 from deploy_agent.health_checker import HealthChecker, default_checks_for_target
 from deploy_agent.traffic_shifter import TrafficShifter, monitoring_window
 from shared.dynamodb_service import get_dynamodb_service
 from shared.logger import get_logger
+from deploy_agent.rollback import (
+    execute_rollback,
+    extract_failure_context_from_shift,
+    extract_failure_context_from_monitor,
+)
+
 
 logger = get_logger(__name__)
 
@@ -59,7 +67,7 @@ async def run_deploy(pipeline_data: Dict[str, Any], approval_id: str = None) -> 
     start_time = time.time()
 
     health_check_base_url = os.getenv("DEPLOY_HEALTH_CHECK_URL", "http://backend:4000")
-    monitoring_seconds = int(os.getenv("DEPLOY_MONITORING_SECONDS", "10"))  # short default for testing
+    monitoring_seconds = int(os.getenv("DEPLOY_MONITORING_SECONDS", "10"))
     monitoring_interval = int(os.getenv("DEPLOY_MONITORING_INTERVAL", "5"))
 
     logger.info(
@@ -101,6 +109,7 @@ async def run_deploy(pipeline_data: Dict[str, Any], approval_id: str = None) -> 
         smoke_result = await smoke_checker.run_all()
         smoke_result["slot_id"] = green_slot["slot_id"]
 
+        # Smoke failure -> FAILED (no rollback, no traffic was shifted)
         if not smoke_result["passed"]:
             await _transition(
                 db, deployment_id, pipeline_id,
@@ -141,17 +150,24 @@ async def run_deploy(pipeline_data: Dict[str, Any], approval_id: str = None) -> 
         )
         shift_result = await shifter.run()
 
+        # Traffic-shift failure -> ROLLBACK (revert traffic to blue)
         if not shift_result["passed"]:
-            await _transition(
-                db, deployment_id, pipeline_id,
+            failure_ctx = extract_failure_context_from_shift(shift_result)
+            failure_ctx["head_sha"] = head_sha
+            rollback_outcome = await execute_rollback(
+                db=db,
+                pipeline_id=pipeline_id,
+                deployment_id=deployment_id,
+                repo=repo,
+                pr_number=pr_number,
                 from_state=DeploymentState.TRAFFIC_SHIFTING.value,
-                to_state=DeploymentState.FAILED.value,  # Day 16 will use ROLLED_BACK
-                comment=f"Traffic shift halted: {shift_result['halt_reason']}",
-                metadata={"shift_result": shift_result},
+                reason=shift_result["halt_reason"],
+                failure_context=failure_ctx,
             )
-            return _result(deployment_id, "failed", blue_slot, green_slot,
+            return _result(deployment_id, "rolled_back", blue_slot, green_slot,
                           smoke_result, shift_result, None, start_time,
-                          "TRAFFIC_SHIFT_FAILED")
+                          "ROLLED_BACK_IN_TRAFFIC_SHIFT",
+                          extra={"rollback": rollback_outcome})
 
         # === MONITORING WINDOW ===
         await _transition(
@@ -169,17 +185,24 @@ async def run_deploy(pipeline_data: Dict[str, Any], approval_id: str = None) -> 
             interval_seconds=monitoring_interval,
         )
 
+        # Monitoring failure -> ROLLBACK (revert traffic to blue)
         if not monitor_result["passed"]:
-            await _transition(
-                db, deployment_id, pipeline_id,
+            failure_ctx = extract_failure_context_from_monitor(monitor_result)
+            failure_ctx["head_sha"] = head_sha
+            rollback_outcome = await execute_rollback(
+                db=db,
+                pipeline_id=pipeline_id,
+                deployment_id=deployment_id,
+                repo=repo,
+                pr_number=pr_number,
                 from_state=DeploymentState.MONITORING.value,
-                to_state=DeploymentState.ROLLED_BACK.value,
-                comment=f"Degraded during monitoring at {monitor_result['duration_seconds']}s",
-                metadata={"monitor_result": monitor_result},
+                reason=f"Health degraded {monitor_result['duration_seconds']}s into monitoring window",
+                failure_context=failure_ctx,
             )
             return _result(deployment_id, "rolled_back", blue_slot, green_slot,
                           smoke_result, shift_result, monitor_result,
-                          start_time, "ROLLED_BACK_IN_MONITORING")
+                          start_time, "ROLLED_BACK_IN_MONITORING",
+                          extra={"rollback": rollback_outcome})
 
         # === PROMOTED ===
         await _transition(
@@ -209,8 +232,8 @@ async def run_deploy(pipeline_data: Dict[str, Any], approval_id: str = None) -> 
 
 
 def _result(deployment_id, final_state, blue_slot, green_slot, smoke,
-            shift, monitor, start_time, decision, error=None):
-    return {
+            shift, monitor, start_time, decision, error=None, extra=None):
+    result = {
         "deployment_id": deployment_id,
         "final_state": final_state,
         "blue_slot": blue_slot,
@@ -222,3 +245,6 @@ def _result(deployment_id, final_state, blue_slot, green_slot, smoke,
         "decision": decision,
         "error": error,
     }
+    if extra:
+        result.update(extra)
+    return result
