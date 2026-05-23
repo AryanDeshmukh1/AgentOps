@@ -1,19 +1,22 @@
 """
 DeployAgent — orchestrates blue/green deployments.
 
-Day 13 scope: skeleton + blue slot provisioning + stub smoke test.
-Days 14-16 will add real health checks, green slot, traffic shift, rollback.
+Day 15 scope:
+    pending -> provisioning -> smoke_test -> ready_for_traffic_shift
+            -> traffic_shifting (10/50/100) -> monitoring -> promoted
+
+Day 16 will add: auto-rollback on traffic-shift or monitoring failure.
 """
 import asyncio
+import os
 import time
 from datetime import datetime, timezone
 from typing import Dict, Any
 from uuid import uuid4
 
-from deploy_agent.deployment_state_machine import (
-    DeploymentState,
-    build_event,
-)
+from deploy_agent.deployment_state_machine import DeploymentState, build_event
+from deploy_agent.health_checker import HealthChecker, default_checks_for_target
+from deploy_agent.traffic_shifter import TrafficShifter, monitoring_window
 from shared.dynamodb_service import get_dynamodb_service
 from shared.logger import get_logger
 
@@ -22,7 +25,6 @@ logger = get_logger(__name__)
 
 async def _transition(db, deployment_id, pipeline_id, from_state, to_state,
                        actor="DeployAgent", comment="", metadata=None):
-    """Atomic deployment state transition + audit event."""
     ok = await db.transition_deployment(
         pipeline_id=pipeline_id,
         deployment_id=deployment_id,
@@ -37,15 +39,17 @@ async def _transition(db, deployment_id, pipeline_id, from_state, to_state,
     return ok
 
 
+def _build_slot(color: str, head_sha: str) -> Dict[str, Any]:
+    return {
+        "slot_id": f"{color}_{uuid4().hex[:8]}",
+        "color": color,
+        "target": f"production-{color}",
+        "image_tag": head_sha[:8] if head_sha else "unknown",
+        "provisioned_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 async def run_deploy(pipeline_data: Dict[str, Any], approval_id: str = None) -> Dict[str, Any]:
-    """
-    Entry point for DeployAgent.
-
-    Day 13 flow:
-        pending -> provisioning -> smoke_test -> ready_for_traffic_shift
-
-    Returns a report dict with deployment_id, final_state, and blue slot info.
-    """
     pipeline_id = pipeline_data["pipeline_id"]
     repo = pipeline_data["repo"]
     pr_number = pipeline_data["pr_number"]
@@ -54,129 +58,167 @@ async def run_deploy(pipeline_data: Dict[str, Any], approval_id: str = None) -> 
     deployment_id = f"deploy_{pipeline_id}_{int(time.time())}"
     start_time = time.time()
 
-    logger.info(f"[{pipeline_id}] DeployAgent starting — deployment_id={deployment_id}")
+    health_check_base_url = os.getenv("DEPLOY_HEALTH_CHECK_URL", "http://backend:4000")
+    monitoring_seconds = int(os.getenv("DEPLOY_MONITORING_SECONDS", "10"))  # short default for testing
+    monitoring_interval = int(os.getenv("DEPLOY_MONITORING_INTERVAL", "5"))
+
+    logger.info(
+        f"[{pipeline_id}] DeployAgent starting — deployment_id={deployment_id}, "
+        f"health_target={health_check_base_url}, monitor={monitoring_seconds}s"
+    )
 
     db = get_dynamodb_service()
 
-    # 1. Create initial deployment record (pending)
     await db.save_deployment(
-        pipeline_id=pipeline_id,
-        deployment_id=deployment_id,
-        approval_id=approval_id,
-        repo=repo,
-        pr_number=pr_number,
-        head_sha=head_sha,
+        pipeline_id=pipeline_id, deployment_id=deployment_id,
+        approval_id=approval_id, repo=repo, pr_number=pr_number, head_sha=head_sha,
     )
-    logger.info(f"[{pipeline_id}] Deployment record created: {deployment_id}")
 
     try:
-        # 2. pending -> provisioning
-        blue_slot = {
-            "slot_id": f"blue_{uuid4().hex[:8]}",
-            "target": "production-blue",
-            "image_tag": head_sha[:8],
-            "provisioned_at": datetime.now(timezone.utc).isoformat(),
-        }
+        # === PROVISIONING ===
+        blue_slot = _build_slot("blue", head_sha)
+        green_slot = _build_slot("green", head_sha)
+
         await _transition(
             db, deployment_id, pipeline_id,
             from_state=DeploymentState.PENDING.value,
             to_state=DeploymentState.PROVISIONING.value,
-            comment=f"Provisioning blue slot {blue_slot['slot_id']}",
-            metadata={"blue_slot": blue_slot},
+            comment=f"Provisioning blue={blue_slot['slot_id']}, green={green_slot['slot_id']}",
+            metadata={"blue_slot": blue_slot, "green_slot": green_slot},
         )
-
-        # Simulate provisioning work
         await asyncio.sleep(1)
-        logger.info(f"[{pipeline_id}] Blue slot provisioned: {blue_slot['slot_id']}")
 
-        # 3. provisioning -> smoke_test
+        # === SMOKE TEST ===
         await _transition(
             db, deployment_id, pipeline_id,
             from_state=DeploymentState.PROVISIONING.value,
             to_state=DeploymentState.SMOKE_TEST.value,
-            comment="Running smoke tests on blue slot",
-            metadata={"blue_slot": blue_slot["slot_id"]},
+            comment=f"Health checks against green {green_slot['slot_id']}",
         )
 
-        # 4. Stub smoke test (Day 14 makes this real)
-        smoke_result = await _stub_smoke_test(blue_slot)
-        logger.info(f"[{pipeline_id}] Smoke test: {smoke_result['status']}")
+        checks = default_checks_for_target(health_check_base_url)
+        smoke_checker = HealthChecker(checks=checks, max_retries=3)
+        smoke_result = await smoke_checker.run_all()
+        smoke_result["slot_id"] = green_slot["slot_id"]
 
         if not smoke_result["passed"]:
-            # Smoke failed -> failed state
             await _transition(
                 db, deployment_id, pipeline_id,
                 from_state=DeploymentState.SMOKE_TEST.value,
                 to_state=DeploymentState.FAILED.value,
-                comment=f"Smoke test failed: {smoke_result['reason']}",
+                comment=f"Smoke failed: {smoke_result['checks_failed']} check(s)",
                 metadata={"smoke_result": smoke_result},
             )
-            duration_ms = int((time.time() - start_time) * 1000)
-            return {
-                "deployment_id": deployment_id,
-                "final_state": DeploymentState.FAILED.value,
-                "blue_slot": blue_slot,
-                "smoke_result": smoke_result,
-                "duration_ms": duration_ms,
-                "decision": "DEPLOY_FAILED",
-            }
+            return _result(deployment_id, "failed", blue_slot, green_slot,
+                          smoke_result, None, None, start_time, "DEPLOY_FAILED")
 
-        # 5. smoke_test -> ready_for_traffic_shift (Day 13 stops here)
+        # === READY FOR TRAFFIC SHIFT ===
         await _transition(
             db, deployment_id, pipeline_id,
             from_state=DeploymentState.SMOKE_TEST.value,
             to_state=DeploymentState.READY_FOR_TRAFFIC_SHIFT.value,
-            comment="Blue slot verified, ready for green deploy (Day 14+)",
+            comment=f"Green healthy ({smoke_result['checks_passed']}/{smoke_result['checks_run']})",
             metadata={"smoke_result": smoke_result},
         )
 
-        duration_ms = int((time.time() - start_time) * 1000)
-        logger.info(
-            f"[{pipeline_id}] DeployAgent complete in {duration_ms}ms — "
-            f"state=ready_for_traffic_shift"
+        # === TRAFFIC SHIFTING ===
+        await _transition(
+            db, deployment_id, pipeline_id,
+            from_state=DeploymentState.READY_FOR_TRAFFIC_SHIFT.value,
+            to_state=DeploymentState.TRAFFIC_SHIFTING.value,
+            comment="Starting gradual traffic shift",
         )
 
-        return {
-            "deployment_id": deployment_id,
-            "final_state": DeploymentState.READY_FOR_TRAFFIC_SHIFT.value,
-            "blue_slot": blue_slot,
-            "smoke_result": smoke_result,
-            "duration_ms": duration_ms,
-            "decision": "DEPLOYED_BLUE",
-        }
+        async def persist_split(blue_pct, green_pct):
+            await db.update_deployment_traffic_split(
+                pipeline_id, deployment_id, blue_pct, green_pct
+            )
+
+        shift_checker = HealthChecker(checks=checks, max_retries=2)
+        shifter = TrafficShifter(
+            health_checker=shift_checker,
+            on_shift=persist_split,
+        )
+        shift_result = await shifter.run()
+
+        if not shift_result["passed"]:
+            await _transition(
+                db, deployment_id, pipeline_id,
+                from_state=DeploymentState.TRAFFIC_SHIFTING.value,
+                to_state=DeploymentState.FAILED.value,  # Day 16 will use ROLLED_BACK
+                comment=f"Traffic shift halted: {shift_result['halt_reason']}",
+                metadata={"shift_result": shift_result},
+            )
+            return _result(deployment_id, "failed", blue_slot, green_slot,
+                          smoke_result, shift_result, None, start_time,
+                          "TRAFFIC_SHIFT_FAILED")
+
+        # === MONITORING WINDOW ===
+        await _transition(
+            db, deployment_id, pipeline_id,
+            from_state=DeploymentState.TRAFFIC_SHIFTING.value,
+            to_state=DeploymentState.MONITORING.value,
+            comment=f"100% green — monitoring for {monitoring_seconds}s",
+            metadata={"shift_result": shift_result},
+        )
+
+        monitor_checker = HealthChecker(checks=checks, max_retries=2)
+        monitor_result = await monitoring_window(
+            health_checker=monitor_checker,
+            duration_seconds=monitoring_seconds,
+            interval_seconds=monitoring_interval,
+        )
+
+        if not monitor_result["passed"]:
+            await _transition(
+                db, deployment_id, pipeline_id,
+                from_state=DeploymentState.MONITORING.value,
+                to_state=DeploymentState.ROLLED_BACK.value,
+                comment=f"Degraded during monitoring at {monitor_result['duration_seconds']}s",
+                metadata={"monitor_result": monitor_result},
+            )
+            return _result(deployment_id, "rolled_back", blue_slot, green_slot,
+                          smoke_result, shift_result, monitor_result,
+                          start_time, "ROLLED_BACK_IN_MONITORING")
+
+        # === PROMOTED ===
+        await _transition(
+            db, deployment_id, pipeline_id,
+            from_state=DeploymentState.MONITORING.value,
+            to_state=DeploymentState.PROMOTED.value,
+            comment=f"Promoted after {monitor_result['duration_seconds']}s stable monitoring",
+            metadata={"monitor_result": monitor_result},
+        )
+
+        return _result(deployment_id, "promoted", blue_slot, green_slot,
+                      smoke_result, shift_result, monitor_result,
+                      start_time, "PROMOTED")
 
     except Exception as e:
         logger.error(f"[{pipeline_id}] DeployAgent failed: {e}", exc_info=True)
-        # Best-effort failure transition (may fail if state already terminal)
         current = await db.get_deployment(pipeline_id, deployment_id)
-        if current and not (current.get("status") in ("promoted", "rolled_back", "failed")):
+        if current and current.get("status") not in ("promoted", "rolled_back", "failed"):
             await _transition(
                 db, deployment_id, pipeline_id,
                 from_state=current.get("status", "pending"),
                 to_state=DeploymentState.FAILED.value,
                 comment=f"Unexpected error: {str(e)[:200]}",
             )
-        duration_ms = int((time.time() - start_time) * 1000)
-        return {
-            "deployment_id": deployment_id,
-            "final_state": DeploymentState.FAILED.value,
-            "error": str(e),
-            "duration_ms": duration_ms,
-            "decision": "DEPLOY_FAILED",
-        }
+        return _result(deployment_id, "failed", None, None, None, None, None,
+                      start_time, "DEPLOY_FAILED", error=str(e))
 
 
-async def _stub_smoke_test(blue_slot: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Day 13 stub: pretends to run a smoke test.
-    Day 14 replaces this with real HTTP health checks.
-    """
-    await asyncio.sleep(0.5)
+def _result(deployment_id, final_state, blue_slot, green_slot, smoke,
+            shift, monitor, start_time, decision, error=None):
     return {
-        "status": "ok",
-        "passed": True,
-        "checks_run": 3,
-        "checks_passed": 3,
-        "duration_ms": 500,
-        "slot_id": blue_slot["slot_id"],
+        "deployment_id": deployment_id,
+        "final_state": final_state,
+        "blue_slot": blue_slot,
+        "green_slot": green_slot,
+        "smoke_result": smoke,
+        "shift_result": shift,
+        "monitor_result": monitor,
+        "duration_ms": int((time.time() - start_time) * 1000),
+        "decision": decision,
+        "error": error,
     }

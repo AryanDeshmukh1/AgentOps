@@ -306,6 +306,29 @@ class DynamoDBService:
             logger.error(f"Failed to transition deployment: {e}")
             return False
 
+
+    async def update_deployment_traffic_split(self, pipeline_id, deployment_id,
+                                               blue_percent, green_percent):
+        """Update only the traffic_split field — non-state-machine update."""
+        try:
+            self.deployments_table.update_item(
+                Key={"pipeline_id": pipeline_id, "deployment_id": deployment_id},
+                UpdateExpression="SET traffic_split = :split, last_updated_at = :now",
+                ExpressionAttributeValues={
+                    ":split": {"blue": blue_percent, "green": green_percent},
+                    ":now": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            logger.info(
+                f"Updated traffic split {deployment_id}: "
+                f"blue={blue_percent}% green={green_percent}%"
+            )
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to update traffic split: {e}")
+            return False
+        
+        
     async def save_deployment_event(self, event):
         try:
             self.deployment_events_table.put_item(Item=_convert_floats(event))

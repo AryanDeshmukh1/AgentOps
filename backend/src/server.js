@@ -44,6 +44,7 @@ app.use(morgan('dev'));
 // Routes
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/health', healthRoutes);
+app.use('/health', healthRoutes);
 app.use('/api/pipelines', pipelineRoutes);
 app.use('/api/approvals', approvalRoutes);
 
