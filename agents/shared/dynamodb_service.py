@@ -56,6 +56,9 @@ class DynamoDBService:
         self.deployment_events_table = self.dynamodb.Table(
             os.getenv("DYNAMODB_DEPLOYMENT_EVENTS_TABLE", "AgentOps-DeploymentEvents")
         )
+        self.metrics_table = self.dynamodb.Table(
+            os.getenv("DYNAMODB_METRICS_TABLE", "AgentOps-Metrics")
+        )
         logger.info(f"DynamoDB service initialized (region={region})")
 
     # ---------- Pipelines ----------
@@ -340,8 +343,43 @@ class DynamoDBService:
         except ClientError as e:
             logger.error(f"Failed to save deployment event: {e}")
             return False
+    
+    # ---------- Metrics (Day 17+) ----------
 
+    async def save_metric_sample(self, sample):
+        try:
+            self.metrics_table.put_item(Item=_convert_floats(sample))
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to save metric sample: {e}")
+            return False
 
+    async def list_recent_metrics(self, deployment_id, limit=20):
+        """Get most recent metric samples for a deployment, newest first."""
+        try:
+            from boto3.dynamodb.conditions import Key
+            result = self.metrics_table.query(
+                KeyConditionExpression=Key("deployment_id").eq(deployment_id),
+                ScanIndexForward=False,  # newest first
+                Limit=limit,
+            )
+            return _restore_decimals(result.get("Items", []))
+        except ClientError as e:
+            logger.error(f"Failed to list metrics: {e}")
+            return []
+
+    async def list_promoted_deployments(self):
+        """Scan for all deployments in the 'promoted' state. Used by metric worker."""
+        try:
+            result = self.deployments_table.scan(
+                FilterExpression="#status = :promoted",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={":promoted": "promoted"},
+            )
+            return _restore_decimals(result.get("Items", []))
+        except ClientError as e:
+            logger.error(f"Failed to list promoted deployments: {e}")
+            return []
 _service = None
 
 

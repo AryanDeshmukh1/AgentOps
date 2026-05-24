@@ -25,6 +25,7 @@ logger = logging.getLogger("agentops")
 
 # How often the background worker scans for approvals to auto-promote/expire.
 APPROVAL_WORKER_INTERVAL_SECONDS = int(os.getenv("APPROVAL_WORKER_INTERVAL", "60"))
+METRIC_WORKER_INTERVAL_SECONDS = int(os.getenv("METRIC_WORKER_INTERVAL", "30"))
 
 
 async def approval_worker():
@@ -101,7 +102,27 @@ async def approval_worker():
 
         await asyncio.sleep(APPROVAL_WORKER_INTERVAL_SECONDS)
 
+async def metric_worker():
+    """Background task: every N seconds, sample metrics for each promoted deployment.
+    Samples are written to AgentOps-Metrics; Day 18's anomaly detector consumes them.
+    """
+    from shared.dynamodb_service import get_dynamodb_service
+    from incident_agent.metric_collector import collect_one_sample
 
+    logger.info(f"[METRIC_WORKER] Started — interval={METRIC_WORKER_INTERVAL_SECONDS}s")
+    db = get_dynamodb_service()
+
+    while True:
+        try:
+            promoted = await db.list_promoted_deployments()
+            if promoted:
+                logger.info(f"[METRIC_WORKER] Sampling {len(promoted)} promoted deployment(s)")
+            for deployment in promoted:
+                await collect_one_sample(deployment["deployment_id"])
+        except Exception as e:
+            logger.error(f"[METRIC_WORKER] Loop error: {e}", exc_info=True)
+
+        await asyncio.sleep(METRIC_WORKER_INTERVAL_SECONDS)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("AgentOps Agent System starting up...")
@@ -113,17 +134,20 @@ async def lifespan(app: FastAPI):
     get_pipeline_graph()
 
     # Start background approval worker
-    worker_task = asyncio.create_task(approval_worker())
+    approval_task = asyncio.create_task(approval_worker())
+    metric_task = asyncio.create_task(metric_worker())
 
     yield
 
     logger.info("AgentOps Agent System shutting down...")
-    worker_task.cancel()
-    try:
-        await worker_task
-    except asyncio.CancelledError:
-        logger.info("[APPROVAL_WORKER] Cancelled cleanly")
-
+    approval_task.cancel()
+    metric_task.cancel()
+    for t in (approval_task, metric_task):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+    logger.info("[WORKERS] Cancelled cleanly")
 
 app = FastAPI(
     title="AgentOps Agent System",
