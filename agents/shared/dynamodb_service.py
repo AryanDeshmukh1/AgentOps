@@ -59,6 +59,10 @@ class DynamoDBService:
         self.metrics_table = self.dynamodb.Table(
             os.getenv("DYNAMODB_METRICS_TABLE", "AgentOps-Metrics")
         )
+        self.incidents_table = self.dynamodb.Table(
+            os.getenv("DYNAMODB_INCIDENTS_TABLE", "AgentOps-Incidents")
+        
+        )
         logger.info(f"DynamoDB service initialized (region={region})")
 
     # ---------- Pipelines ----------
@@ -380,6 +384,73 @@ class DynamoDBService:
         except ClientError as e:
             logger.error(f"Failed to list promoted deployments: {e}")
             return []
+        
+        # ---------- Incidents (Day 18+) ----------
+
+    async def save_incident(self, incident):
+        try:
+            self.incidents_table.put_item(Item=_convert_floats(incident))
+            logger.info(
+                f"Saved incident {incident['incident_id']} "
+                f"(severity={incident['severity']})"
+            )
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to save incident: {e}")
+            return False
+
+    async def list_recent_incidents(self, deployment_id, limit=10):
+        """Most recent incidents for a deployment, newest first."""
+        try:
+            from boto3.dynamodb.conditions import Key
+            result = self.incidents_table.query(
+                KeyConditionExpression=Key("deployment_id").eq(deployment_id),
+                ScanIndexForward=False,  # newest first (incident_id has timestamp suffix)
+                Limit=limit,
+            )
+            return _restore_decimals(result.get("Items", []))
+        except ClientError as e:
+            logger.error(f"Failed to list incidents: {e}")
+            return []
+
+    async def list_all_open_incidents(self):
+        """Scan all open incidents across all deployments."""
+        try:
+            result = self.incidents_table.scan(
+                FilterExpression="#status = :open",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={":open": "open"},
+            )
+            return _restore_decimals(result.get("Items", []))
+        except ClientError as e:
+            logger.error(f"Failed to list open incidents: {e}")
+            return []
+
+    async def update_incident_status(self, deployment_id, incident_id, new_status,
+                                      actor, comment=""):
+        """Transition an incident (open -> acknowledged -> resolved)."""
+        try:
+            field_prefix = new_status  # acknowledged / resolved
+            self.incidents_table.update_item(
+                Key={"deployment_id": deployment_id, "incident_id": incident_id},
+                UpdateExpression=(
+                    f"SET #status = :new, {field_prefix}_by = :actor, "
+                    f"{field_prefix}_at = :now, last_comment = :comment"
+                ),
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":new": new_status,
+                    ":actor": actor,
+                    ":now": datetime.now(timezone.utc).isoformat(),
+                    ":comment": comment,
+                },
+            )
+            logger.info(f"Incident {incident_id} -> {new_status} by {actor}")
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to update incident: {e}")
+            return False
+        
 _service = None
 
 

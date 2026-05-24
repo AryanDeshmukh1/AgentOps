@@ -103,11 +103,13 @@ async def approval_worker():
         await asyncio.sleep(APPROVAL_WORKER_INTERVAL_SECONDS)
 
 async def metric_worker():
-    """Background task: every N seconds, sample metrics for each promoted deployment.
-    Samples are written to AgentOps-Metrics; Day 18's anomaly detector consumes them.
+    """
+    Background task: every N seconds, sample metrics for each promoted deployment,
+    then run anomaly detection. Fires incidents to AgentOps-Incidents.
     """
     from shared.dynamodb_service import get_dynamodb_service
     from incident_agent.metric_collector import collect_one_sample
+    from incident_agent.agent import evaluate_sample
 
     logger.info(f"[METRIC_WORKER] Started — interval={METRIC_WORKER_INTERVAL_SECONDS}s")
     db = get_dynamodb_service()
@@ -118,11 +120,15 @@ async def metric_worker():
             if promoted:
                 logger.info(f"[METRIC_WORKER] Sampling {len(promoted)} promoted deployment(s)")
             for deployment in promoted:
-                await collect_one_sample(deployment["deployment_id"])
+                deployment_id = deployment["deployment_id"]
+                sample = await collect_one_sample(deployment_id)
+                if sample:
+                    await evaluate_sample(deployment_id, sample)
         except Exception as e:
             logger.error(f"[METRIC_WORKER] Loop error: {e}", exc_info=True)
 
         await asyncio.sleep(METRIC_WORKER_INTERVAL_SECONDS)
+        
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("AgentOps Agent System starting up...")
