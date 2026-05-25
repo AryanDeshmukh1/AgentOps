@@ -16,8 +16,10 @@ from typing import Dict, Any, Optional
 
 from incident_agent.anomaly_detector import detect_anomalies
 from incident_agent.baseline import compute_baseline, has_usable_baseline
+from incident_agent.root_cause_ai import analyze_root_cause
 from shared.dynamodb_service import get_dynamodb_service
 from shared.logger import get_logger
+
 
 logger = get_logger(__name__)
 
@@ -112,4 +114,7 @@ async def evaluate_sample(deployment_id: str, sample: Dict[str, Any]) -> Optiona
         f"[IncidentAgent] INCIDENT FIRED — {incident_id} "
         f"severity={detection['severity']} {triggers}"
     )
+    import asyncio
+    asyncio.create_task(analyze_root_cause(incident))
+    
     return incident

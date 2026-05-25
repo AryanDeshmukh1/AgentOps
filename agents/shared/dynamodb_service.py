@@ -398,6 +398,35 @@ class DynamoDBService:
         except ClientError as e:
             logger.error(f"Failed to save incident: {e}")
             return False
+        
+
+
+
+    async def update_incident_with_root_cause(self, deployment_id, incident_id, ai_result):
+        """Save AI-generated root cause analysis to an existing incident."""
+        try:
+            self.incidents_table.update_item(
+                Key={"deployment_id": deployment_id, "incident_id": incident_id},
+                UpdateExpression=(
+                    "SET root_cause = :rc, suggested_fix = :sf, "
+                    "ai_confidence = :conf, investigation_hints = :hints, "
+                    "ai_analyzed_at = :now"
+                ),
+                ExpressionAttributeValues={
+                    ":rc": ai_result.get("root_cause", ""),
+                    ":sf": ai_result.get("suggested_fix", ""),
+                    ":conf": ai_result.get("confidence", "unknown"),
+                    ":hints": ai_result.get("investigation_hints", []),
+                    ":now": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            logger.info(f"Updated incident {incident_id} with AI root cause")
+            return True
+        except ClientError as e:
+            logger.error(f"Failed to update incident with root cause: {e}")
+            return False
+        
+        
 
     async def list_recent_incidents(self, deployment_id, limit=10):
         """Most recent incidents for a deployment, newest first."""
