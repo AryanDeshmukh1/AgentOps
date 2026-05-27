@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>AgentOps WS Tester</title>
+  <style>
+    body { font-family: monospace; background: #111; color: #0f0; padding: 20px; }
+    h1 { color: #0ff; }
+    button { background: #222; color: #0f0; border: 1px solid #0f0; padding: 8px 14px; margin: 4px; cursor: pointer; font-family: monospace; }
+    #log { background: #000; border: 1px solid #0f0; padding: 12px; height: 500px; overflow-y: auto; margin-top: 12px; }
+    .ev { color: #ff0; margin: 4px 0; padding: 6px; background: #1a1a00; border-left: 3px solid #ff0; }
+    .sys { color: #888; }
+    .err { color: #f44; }
+  </style>
+  <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+</head>
+<body>
+  <h1>AgentOps WebSocket Tester</h1>
+  <div>
+    Status: <span id="status">disconnected</span>
+  </div>
+  <div style="margin-top: 12px;">
+    Subscribe:
+    <button onclick="sub('pipelines')">pipelines</button>
+    <button onclick="sub('approvals')">approvals</button>
+    <button onclick="sub('deployments')">deployments</button>
+    <button onclick="sub('incidents')">incidents</button>
+    <button onclick="subAll()">ALL</button>
+  </div>
+  <div id="log"></div>
+
+  <script>
+    const log = (msg, cls='') => {
+      const div = document.createElement('div');
+      if (cls) div.className = cls;
+      div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      document.getElementById('log').prepend(div);
+    };
+
+    const socket = io('http://localhost:4000', {
+      auth: { token: 'dev_ws_token_replace_me_in_prod' }
+    });
+
+    socket.on('connect', () => {
+      document.getElementById('status').textContent = 'connected: ' + socket.id;
+      document.getElementById('status').style.color = '#0f0';
+      log('Connected.', 'sys');
+    });
+    socket.on('disconnect', () => {
+      document.getElementById('status').textContent = 'disconnected';
+      document.getElementById('status').style.color = '#f44';
+      log('Disconnected.', 'sys');
+    });
+    socket.on('connect_error', (err) => {
+      log('Connect error: ' + err.message, 'err');
+    });
+    socket.on('subscribed', (data) => {
+      log('Subscribed: ' + JSON.stringify(data), 'sys');
+    });
+    socket.on('event', (env) => {
+      log(`${env.channel}.${env.type} from ${env.source}: ${JSON.stringify(env.payload)}`, 'ev');
+    });
+
+    function sub(ch) { socket.emit('subscribe', ch); }
+    function subAll() { socket.emit('subscribe', ['pipelines','approvals','deployments','incidents']); }
+  </script>
+</body>
+</html>

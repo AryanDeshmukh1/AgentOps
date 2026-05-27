@@ -11,6 +11,9 @@ import healthRoutes from './routes/health.js';
 import logger from './utils/logger.js';
 import approvalRoutes from './routes/approvals.js';
 import deploymentRoutes from './routes/deployments.js';
+import { registerIO, CHANNELS } from './services/wsBroadcaster.js';
+import eventsRoutes from './routes/events.js';
+
 
 
 dotenv.config();
@@ -25,8 +28,17 @@ const httpServer = createServer(app);
 // Socket.io for real-time dashboard updates
 const io = new SocketServer(httpServer, {
   cors: {
-    origin: CORS_ORIGIN,
+    origin: (origin, callback) => {
+      // Allow no-origin (file://, curl, mobile apps) in development
+      if (!origin) return callback(null, true);
+      const allowed = [CORS_ORIGIN, 'http://localhost:3000', 'http://localhost:4000', 'null'];
+      if (allowed.includes(origin) || origin.startsWith('file://')) {
+        return callback(null, true);
+      }
+      callback(new Error('CORS rejected for origin: ' + origin));
+    },
     methods: ['GET', 'POST'],
+    credentials: true,
   },
 });
 
@@ -50,6 +62,8 @@ app.use('/health', healthRoutes);
 app.use('/api/pipelines', pipelineRoutes);
 app.use('/api/approvals', approvalRoutes);
 app.use('/api/deployments', deploymentRoutes);
+app.use('/api/events', eventsRoutes);
+
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -75,13 +89,55 @@ app.use((err, req, res, next) => {
 });
 
 // WebSocket connections
+// WebSocket: auth handshake
+const WS_SHARED_TOKEN = process.env.WS_SHARED_TOKEN;
+const VALID_CHANNELS = new Set(Object.values(CHANNELS));
+
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+  if (!WS_SHARED_TOKEN) {
+    logger.warn('[WS] WS_SHARED_TOKEN not configured — allowing all connections (dev only)');
+    return next();
+  }
+  if (token !== WS_SHARED_TOKEN) {
+    logger.warn(`[WS] Auth rejected for ${socket.id}: bad token`);
+    return next(new Error('Authentication required'));
+  }
+  next();
+});
+
 io.on('connection', (socket) => {
-  logger.info(`Client connected: ${socket.id}`);
+  logger.info(`[WS] Client connected: ${socket.id}`);
+
+  // Subscribe to one or more channels
+  socket.on('subscribe', (channels) => {
+    const list = Array.isArray(channels) ? channels : [channels];
+    const joined = [];
+    const rejected = [];
+    for (const ch of list) {
+      if (VALID_CHANNELS.has(ch)) {
+        socket.join(ch);
+        joined.push(ch);
+      } else {
+        rejected.push(ch);
+      }
+    }
+    socket.emit('subscribed', { joined, rejected });
+    logger.info(`[WS] ${socket.id} subscribed to: ${joined.join(', ')}`);
+  });
+
+  socket.on('unsubscribe', (channels) => {
+    const list = Array.isArray(channels) ? channels : [channels];
+    for (const ch of list) socket.leave(ch);
+    socket.emit('unsubscribed', { channels: list });
+  });
 
   socket.on('disconnect', () => {
-    logger.info(`Client disconnected: ${socket.id}`);
+    logger.info(`[WS] Client disconnected: ${socket.id}`);
   });
 });
+
+registerIO(io);
 
 // Start server
 httpServer.listen(PORT, HOST, () => {
