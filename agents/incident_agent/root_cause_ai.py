@@ -16,6 +16,7 @@ import httpx
 from shared.dynamodb_service import get_dynamodb_service, _restore_decimals
 from shared.gemini_client import get_gemini_client
 from shared.logger import get_logger
+from shared.event_emitter import emit_event, Channels
 
 logger = get_logger(__name__)
 
@@ -252,11 +253,17 @@ async def analyze_root_cause(incident: Dict[str, Any]) -> Optional[Dict[str, Any
             f"{str(ai_result['root_cause'])[:120]}"
         )
 
-        db = get_dynamodb_service()
-        await db.update_incident_with_root_cause(
-            deployment_id=deployment_id,
-            incident_id=incident_id,
-            ai_result=ai_result,
+        await emit_event(
+            Channels.INCIDENTS,
+            "incident.root_cause_attached",
+            {
+                "incident_id": incident_id,
+                "deployment_id": deployment_id,
+                "ai_confidence": ai_result.get("confidence", "unknown"),
+                "root_cause": ai_result.get("root_cause", "")[:300],
+                "suggested_fix": ai_result.get("suggested_fix", "")[:200],
+            },
+            source="RootCauseAI",
         )
 
         deployment = context.get("deployment", {})

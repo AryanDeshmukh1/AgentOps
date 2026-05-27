@@ -19,6 +19,7 @@ from incident_agent.baseline import compute_baseline, has_usable_baseline
 from incident_agent.root_cause_ai import analyze_root_cause
 from shared.dynamodb_service import get_dynamodb_service
 from shared.logger import get_logger
+from shared.event_emitter import emit_event, Channels
 
 
 logger = get_logger(__name__)
@@ -114,7 +115,23 @@ async def evaluate_sample(deployment_id: str, sample: Dict[str, Any]) -> Optiona
         f"[IncidentAgent] INCIDENT FIRED — {incident_id} "
         f"severity={detection['severity']} {triggers}"
     )
+
+    await emit_event(
+        Channels.INCIDENTS,
+        "incident.fired",
+        {
+            "incident_id": incident_id,
+            "deployment_id": deployment_id,
+            "severity": detection["severity"],
+            "max_abs_z": detection["max_abs_z"],
+            "summary": triggers,
+            "anomalous_metrics": detection["anomalous_metrics"],
+        },
+        source="IncidentAgent",
+    )
+
+    # Kick off async root cause analysis (don't block the metric worker)
     import asyncio
     asyncio.create_task(analyze_root_cause(incident))
-    
+
     return incident

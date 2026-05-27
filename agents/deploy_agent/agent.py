@@ -14,6 +14,8 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, Any
 from uuid import uuid4
+from shared.event_emitter import emit_event, Channels
+
 
 
 from deploy_agent.deployment_state_machine import DeploymentState, build_event
@@ -44,8 +46,21 @@ async def _transition(db, deployment_id, pipeline_id, from_state, to_state,
     if ok:
         event = build_event(deployment_id, from_state, to_state, actor, comment, metadata)
         await db.save_deployment_event(event)
+        # Emit to WebSocket layer
+        await emit_event(
+            Channels.DEPLOYMENTS,
+            "deployment.transitioned",
+            {
+                "deployment_id": deployment_id,
+                "pipeline_id": pipeline_id,
+                "from_state": from_state,
+                "to_state": to_state,
+                "actor": actor,
+                "comment": comment,
+            },
+            source=actor,
+        )
     return ok
-
 
 def _build_slot(color: str, head_sha: str) -> Dict[str, Any]:
     return {
@@ -141,6 +156,17 @@ async def run_deploy(pipeline_data: Dict[str, Any], approval_id: str = None) -> 
         async def persist_split(blue_pct, green_pct):
             await db.update_deployment_traffic_split(
                 pipeline_id, deployment_id, blue_pct, green_pct
+            )
+            await emit_event(
+                Channels.DEPLOYMENTS,
+                "deployment.traffic_shifted",
+                {
+                    "deployment_id": deployment_id,
+                    "pipeline_id": pipeline_id,
+                    "blue_percent": blue_pct,
+                    "green_percent": green_pct,
+                },
+                source="DeployAgent",
             )
 
         shift_checker = HealthChecker(checks=checks, max_retries=2)

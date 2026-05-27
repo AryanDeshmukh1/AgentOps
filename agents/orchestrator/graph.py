@@ -10,6 +10,7 @@ from review_agent.agent import run_review
 from test_agent.agent import run_test_analysis
 from orchestrator.risk_classifier import classify_risk
 from shared.logger import get_logger
+from shared.event_emitter import emit_event, Channels
 from shared.dynamodb_service import get_dynamodb_service
 
 logger = get_logger(__name__)
@@ -53,6 +54,12 @@ async def review_node(state):
         report = await run_review(pipeline_data)
         db = get_dynamodb_service()
         await db.save_agent_decision(pipeline_id, "ReviewAgent", report)
+        await emit_event(
+            Channels.PIPELINES,
+            "pipeline.agent_started",
+            {"pipeline_id": pipeline_id, "agent_name": "ReviewAgent", "decision": report["decision"], "score": report.get("scores", {}).get("overall")},
+            source="ReviewAgent",
+        )
         return {**state, "review_report": report, "current_agent": "ReviewAgent", "final_decision": report["decision"]}
     except Exception as e:
         logger.error(f"[GRAPH] review_node failed: {e}", exc_info=True)
@@ -98,6 +105,17 @@ async def approval_node(state):
             "findings": state.get("review_report", {}).get("summary"),
         }
         approval_id = await db.save_approval_request(pipeline_id, risk, review_summary)
+        await emit_event(
+                Channels.APPROVALS,
+                "approval.created",
+                {
+                    "pipeline_id": pipeline_id,
+                    "approval_id": approval_id,
+                    "risk_level": risk["risk_level"],
+                    "reason": risk["reason"],
+                },
+                source="ApprovalGate",
+            )
         if risk["risk_level"] == "hard":
             return {**state, "risk_assessment": risk, "approval_id": approval_id, "current_agent": "ApprovalGate", "final_decision": "AWAITING_APPROVAL", "status": "awaiting_approval"}
         else:
@@ -150,8 +168,19 @@ async def finalize_node(state):
     if risk:
         updates["risk_level"] = risk["risk_level"]
     await db.update_pipeline_status(pipeline_id, state["timestamp"], updates)
+    await emit_event(
+        Channels.PIPELINES,
+        "pipeline.completed",
+        {
+            "pipeline_id": pipeline_id,
+            "decision": final_decision,
+            "status": status_value,
+            "review_score": updates.get("review_score"),
+            "risk_level": updates.get("risk_level"),
+        },
+        source="Orchestrator",
+    )
     return {**state, "status": status_value, "current_agent": "complete"}
-
 
 def route_after_review(state) -> Literal["test", "finalize"]:
     review = state.get("review_report")

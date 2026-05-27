@@ -26,7 +26,7 @@ HEALTHY_BASELINES = {
 
 # When this is True, the next sample is forced to be a clear anomaly.
 # Used by tests/demos to trigger Day 18's detector deterministically.
-INJECT_ANOMALY_NEXT = {"enabled": False, "spike_factor": 6.0}
+INJECT_ANOMALY_NEXT = {"enabled": False, "spike_factor": 12.0}
 
 
 def _sample_metric(name: str, anomaly: bool = False) -> float:

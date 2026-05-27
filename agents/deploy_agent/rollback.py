@@ -9,6 +9,7 @@ Used by DeployAgent when:
 import os
 from typing import Dict, Any, Optional
 import httpx
+from shared.event_emitter import emit_event, Channels
 
 from deploy_agent.deployment_state_machine import DeploymentState, build_event
 from shared.logger import get_logger
@@ -76,6 +77,22 @@ async def execute_rollback(
         },
     )
     await db.save_deployment_event(event)
+
+
+
+# 3.5. Emit WebSocket event
+    await emit_event(
+        Channels.DEPLOYMENTS,
+        "deployment.rolled_back",
+        {
+            "deployment_id": deployment_id,
+            "pipeline_id": pipeline_id,
+            "reason": reason,
+            "from_state": from_state,
+            "traffic_reverted_to": {"blue": 100, "green": 0},
+        },
+        source=actor,
+    )
 
     # 4. Notify the PR via GitHub
     github_notified = await _notify_github_pr(
