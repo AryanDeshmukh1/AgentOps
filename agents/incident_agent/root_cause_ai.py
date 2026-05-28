@@ -253,6 +253,14 @@ async def analyze_root_cause(incident: Dict[str, Any]) -> Optional[Dict[str, Any
             f"{str(ai_result['root_cause'])[:120]}"
         )
 
+        # Persist AI analysis to the incident record
+        db = get_dynamodb_service()
+        await db.update_incident_with_root_cause(
+            deployment_id=deployment_id,
+            incident_id=incident_id,
+            ai_result=ai_result,
+        )
+
         await emit_event(
             Channels.INCIDENTS,
             "incident.root_cause_attached",

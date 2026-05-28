@@ -408,10 +408,17 @@ class DynamoDBService:
             self.incidents_table.update_item(
                 Key={"deployment_id": deployment_id, "incident_id": incident_id},
                 UpdateExpression=(
-                    "SET root_cause = :rc, suggested_fix = :sf, "
-                    "ai_confidence = :conf, investigation_hints = :hints, "
-                    "ai_analyzed_at = :now"
+                    "SET #rc = :rc, #sf = :sf, "
+                    "#conf = :conf, #hints = :hints, "
+                    "#now_field = :now"
                 ),
+                ExpressionAttributeNames={
+                    "#rc": "root_cause",
+                    "#sf": "suggested_fix",
+                    "#conf": "ai_confidence",
+                    "#hints": "investigation_hints",
+                    "#now_field": "ai_analyzed_at",
+                },
                 ExpressionAttributeValues={
                     ":rc": ai_result.get("root_cause", ""),
                     ":sf": ai_result.get("suggested_fix", ""),

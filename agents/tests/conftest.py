@@ -88,3 +88,139 @@ def sample_pr_data():
         ],
         "timestamp": "2026-05-28T12:00:00Z",
     }
+
+
+
+@pytest.fixture
+def mock_gemini(monkeypatch):
+    """
+    Patch GeminiClient.generate_json() to return canned fixtures.
+    Tests inject a list of responses; calls are returned in order.
+    """
+    from shared import gemini_client as gc
+
+    class MockGemini:
+        def __init__(self):
+            self.responses = []
+            self.calls = []
+
+        def queue(self, response):
+            """Add a response to be returned on the next generate_json call."""
+            self.responses.append(response)
+
+        async def generate_json(self, prompt, use_light_model=False, temperature=0.2):
+            self.calls.append({"prompt": prompt, "use_light": use_light_model})
+            if not self.responses:
+                raise RuntimeError(
+                    f"MockGemini exhausted. Got {len(self.calls)} calls but no queued response."
+                )
+            return self.responses.pop(0)
+
+    mock = MockGemini()
+    monkeypatch.setattr(gc, "_client", mock)
+    monkeypatch.setattr(gc, "get_gemini_client", lambda: mock)
+    return mock
+
+
+@pytest.fixture
+def mock_event_emitter(monkeypatch):
+    """
+    Patch emit_event() so tests don't need a running backend.
+    Captures emissions for assertion.
+    """
+    from shared import event_emitter as ee
+
+    captured = []
+
+    async def fake_emit(channel, type, payload=None, source="agent"):
+        captured.append({
+            "channel": channel,
+            "type": type,
+            "payload": payload or {},
+            "source": source,
+        })
+        return True
+
+    monkeypatch.setattr(ee, "emit_event", fake_emit)
+    return captured
+
+
+@pytest.fixture
+def mock_github_post(monkeypatch):
+    """
+    Patch the httpx call that posts GitHub comments via the backend webhook.
+    Captures posts for assertion.
+    """
+    import httpx
+    captured = []
+
+    class FakeResponse:
+        status_code = 200
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def post(self, url, json=None, **kwargs):
+            captured.append({"url": url, "json": json})
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    return captured
+
+
+@pytest.fixture
+def critical_pr_data():
+    """PR with security-critical files: hardcoded keys, SQL injection."""
+    return {
+        "pipeline_id": "pipe_critical_001",
+        "repo": "test-org/test-repo",
+        "pr_number": 100,
+        "pr_title": "Critical PR with hardcoded keys",
+        "pr_author": "test_user",
+        "head_sha": "critical123abc",
+        "base_sha": "000000",
+        "files": [
+            {
+                "filename": "src/utils.py",
+                "status": "modified",
+                "additions": 20,
+                "deletions": 0,
+                "changes": 20,
+                "patch": (
+                    "+API_KEY = 'sk-AKIAIOSFODNN7EXAMPLE'\n"
+                    "+def query(user_id):\n"
+                    "+    return db.exec(f\"SELECT * FROM u WHERE id={user_id}\")"
+                ),
+            }
+        ],
+        "timestamp": "2026-05-28T12:00:00Z",
+    }
+
+
+@pytest.fixture
+def clean_pr_data():
+    """Low-risk PR: small utility change, no critical paths."""
+    return {
+        "pipeline_id": "pipe_clean_001",
+        "repo": "test-org/test-repo",
+        "pr_number": 101,
+        "pr_title": "Add helper utility",
+        "pr_author": "test_user",
+        "head_sha": "clean123abc",
+        "base_sha": "000000",
+        "files": [
+            {
+                "filename": "src/helpers.py",
+                "status": "modified",
+                "additions": 5,
+                "deletions": 1,
+                "changes": 6,
+                "patch": "+def add(a, b):\n+    return a + b",
+            }
+        ],
+        "timestamp": "2026-05-28T12:00:00Z",
+    }
