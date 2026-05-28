@@ -15,6 +15,7 @@ services:
       - .env
     volumes:
       - ./backend/src:/app/src
+      - ./backend/package.json:/app/package.json
       - ./secrets:/secrets
       - /app/node_modules
     depends_on:
