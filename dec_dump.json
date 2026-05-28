@@ -1,0 +1,168 @@
+{
+    "pipeline_id":  "pipe_agentops-test-target_2_1779298415213",
+    "count":  1,
+    "decisions":  [
+                      {
+                          "agent_name":  "ReviewAgent",
+                          "pipeline_id":  "pipe_agentops-test-target_2_1779298415213",
+                          "report":  {
+                                         "duration_ms":  21223,
+                                         "summary":  {
+                                                         "high":  4,
+                                                         "medium":  3,
+                                                         "critical":  3,
+                                                         "low":  2
+                                                     },
+                                         "reason":  "Critical security finding(s) detected",
+                                         "agent":  "ReviewAgent",
+                                         "decision":  "BLOCK",
+                                         "scores":  {
+                                                        "code_quality":  100,
+                                                        "test_impact":  60,
+                                                        "security":  0,
+                                                        "performance":  100,
+                                                        "documentation":  60,
+                                                        "overall":  62,
+                                                        "architecture":  100
+                                                    },
+                                         "findings":  [
+                                                          {
+                                                              "severity":  "critical",
+                                                              "code_snippet":  "const API_KEY = \"sk-1234567890abcdefghij1234567890abcdefghij\";  // Hardcoded API key",
+                                                              "file":  "sample.js",
+                                                              "line":  3,
+                                                              "suggested_fix":  "Move the key to an environment variable: process.env.API_KEY or os.getenv(\u0027API_KEY\u0027)",
+                                                              "detection_method":  "regex",
+                                                              "description":  "API key embedded in source code can be extracted by anyone with access to the codebase or git history.",
+                                                              "category":  "A02:2025 - Cryptographic Failures",
+                                                              "title":  "Hardcoded API key"
+                                                          },
+                                                          {
+                                                              "severity":  "critical",
+                                                              "code_snippet":  "const password = \"admin123456\";  // Hardcoded password",
+                                                              "file":  "sample.js",
+                                                              "line":  4,
+                                                              "suggested_fix":  "Use environment variables or a secrets manager (AWS Secrets Manager, HashiCorp Vault).",
+                                                              "detection_method":  "regex",
+                                                              "description":  "Plaintext password in source code is a critical security risk and likely violates compliance requirements.",
+                                                              "category":  "A02:2025 - Cryptographic Failures",
+                                                              "title":  "Hardcoded password"
+                                                          },
+                                                          {
+                                                              "severity":  "critical",
+                                                              "code_snippet":  "const AWS_KEY = \"AKIAIOSFODNN7EXAMPLE\";  // AWS access key",
+                                                              "file":  "sample.js",
+                                                              "line":  5,
+                                                              "suggested_fix":  "Revoke the key immediately in AWS IAM console, rotate, and use IAM roles or environment variables.",
+                                                              "detection_method":  "regex",
+                                                              "description":  "AWS access keys grant full access to AWS resources. If pushed to GitHub, AWS auto-detects and notifies, but attackers act fast.",
+                                                              "category":  "A02:2025 - Cryptographic Failures",
+                                                              "title":  "AWS access key in code"
+                                                          },
+                                                          {
+                                                              "severity":  "high",
+                                                              "code_snippet":  "const query = \"SELECT * FROM users WHERE id = \" + userId;",
+                                                              "file":  "sample.js",
+                                                              "line":  9,
+                                                              "suggested_fix":  "Use parameterized queries: db.query(\u0027SELECT * FROM users WHERE id = ?\u0027, [userId])",
+                                                              "detection_method":  "regex",
+                                                              "description":  "Concatenating user input into SQL queries is the textbook SQL injection vulnerability.",
+                                                              "category":  "A05:2025 - Injection",
+                                                              "title":  "Possible SQL injection (string concatenation in query)"
+                                                          },
+                                                          {
+                                                              "severity":  "high",
+                                                              "code_snippet":  "document.getElementById(\"user\").innerHTML = \"Hello, \" + name;",
+                                                              "file":  "sample.js",
+                                                              "line":  15,
+                                                              "suggested_fix":  "Use textContent for plain text, or sanitize HTML with DOMPurify if HTML is required.",
+                                                              "detection_method":  "regex",
+                                                              "description":  "Setting innerHTML with user-controlled data enables XSS attacks.",
+                                                              "category":  "A05:2025 - Injection",
+                                                              "title":  "innerHTML assignment"
+                                                          },
+                                                          {
+                                                              "severity":  "high",
+                                                              "code_snippet":  "return eval(input);",
+                                                              "file":  "sample.js",
+                                                              "line":  20,
+                                                              "suggested_fix":  "Use JSON.parse() for data, or refactor to avoid dynamic code execution entirely.",
+                                                              "detection_method":  "regex",
+                                                              "description":  "eval() executes arbitrary code and is a major attack vector if user input reaches it.",
+                                                              "category":  "A05:2025 - Injection",
+                                                              "title":  "Use of eval()"
+                                                          },
+                                                          {
+                                                              "severity":  "high",
+                                                              "code_snippet":  "function brokenStuff() {",
+                                                              "file":  "sample.js",
+                                                              "line":  26,
+                                                              "suggested_fix":  "Add comprehensive unit tests for the `brokenStuff` function to cover its intended behavior and edge cases.",
+                                                              "detection_method":  "ai",
+                                                              "description":  "New functions should have corresponding unit tests to ensure correctness, prevent regressions, and document expected behavior. This is especially critical for any new functionality introduced.",
+                                                              "category":  "test_impact",
+                                                              "title":  "New function lacks unit tests"
+                                                          },
+                                                          {
+                                                              "severity":  "medium",
+                                                              "code_snippet":  "console.log(\"API key for debugging: \" + API_KEY);  // Sensitive data in logs",
+                                                              "file":  "sample.js",
+                                                              "line":  23,
+                                                              "suggested_fix":  "Remove the log, or redact sensitive fields before logging.",
+                                                              "detection_method":  "regex",
+                                                              "description":  "Logging credentials exposes them in log files which may be archived or accessed by others.",
+                                                              "category":  "A09:2025 - Logging Failures",
+                                                              "title":  "Sensitive data in console.log"
+                                                          },
+                                                          {
+                                                              "severity":  "medium",
+                                                              "code_snippet":  "// TODO: fix this later",
+                                                              "file":  "sample.js",
+                                                              "line":  25,
+                                                              "suggested_fix":  "Resolve the underlying issue or remove the `TODO` if it\u0027s no longer relevant and the code is complete.",
+                                                              "detection_method":  "ai",
+                                                              "description":  "The `TODO` comment indicates unfinished work or a known issue that needs to be addressed, which can lead to technical debt if not resolved.",
+                                                              "category":  "documentation",
+                                                              "title":  "TODO marker indicates incomplete work"
+                                                          },
+                                                          {
+                                                              "severity":  "medium",
+                                                              "code_snippet":  "function brokenStuff() {",
+                                                              "file":  "sample.js",
+                                                              "line":  26,
+                                                              "suggested_fix":  "Add a JSDoc block above `brokenStuff` describing its functionality, parameters (if any), and return value.",
+                                                              "detection_method":  "ai",
+                                                              "description":  "New functions, especially those that might be part of a public API or critical path, should have JSDoc comments to explain their purpose, parameters, and return values, improving code readability and maintainability.",
+                                                              "category":  "documentation",
+                                                              "title":  "Missing JSDoc for new function"
+                                                          },
+                                                          {
+                                                              "severity":  "low",
+                                                              "code_snippet":  "console.log(\"API key for debugging: \" + API_KEY);  // Sensitive data in logs",
+                                                              "file":  "sample.js",
+                                                              "line":  23,
+                                                              "suggested_fix":  "Remove or replace with a proper logger (winston, pino).",
+                                                              "detection_method":  "regex",
+                                                              "description":  "console.log statements should not appear in production code.",
+                                                              "category":  "Code Quality",
+                                                              "title":  "console.log in code"
+                                                          },
+                                                          {
+                                                              "severity":  "low",
+                                                              "code_snippet":  "// TODO: fix this later",
+                                                              "file":  "sample.js",
+                                                              "line":  25,
+                                                              "suggested_fix":  "Resolve the TODO or create a tracked issue and remove the comment.",
+                                                              "detection_method":  "regex",
+                                                              "description":  "Temporary code markers indicate incomplete work shipped to production.",
+                                                              "category":  "Code Quality",
+                                                              "title":  "TODO/FIXME comment"
+                                                          }
+                                                      ],
+                                         "pipeline_id":  "pipe_agentops-test-target_2_1779298415213"
+                                     },
+                          "timestamp":  "2026-05-20T17:33:57.111052+00:00",
+                          "agent_timestamp":  "ReviewAgent#2026-05-20T17:33:57.111052+00:00"
+                      }
+                  ]
+}

@@ -182,7 +182,7 @@ export default function PipelinesPage() {
                   key={p.pipeline_id}
                   pipeline={p}
                   flashed={flashedIds.has(p.pipeline_id)}
-                  onClick={() => navigate(`/pipelines/${encodeURIComponent(p.pipeline_id)}`)}
+                 onClick={() => navigate(`/pipelines/${encodeURIComponent(p.pipeline_id)}`, { state: { pipeline: p } })}
                 />
               ))}
             </tbody>
