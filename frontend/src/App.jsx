@@ -6,6 +6,7 @@ import ApprovalsPage from './pages/ApprovalsPage.jsx';
 import DeploymentsPage from './pages/DeploymentsPage.jsx';
 import IncidentsPage from './pages/IncidentsPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
+import { NotFound } from './components/Skeleton.jsx';
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/deployments" element={<DeploymentsPage />} />
           <Route path="/incidents" element={<IncidentsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
     </BrowserRouter>

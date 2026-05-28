@@ -1,11 +1,11 @@
 ﻿import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, ScanCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, ScanCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import logger from "../utils/logger.js";
 
 const client = new DynamoDBClient({
   region: process.env.AWS_REGION || "ca-central-1",
 });
-const docClient = DynamoDBDocumentClient.from(client);
+export const docClient = DynamoDBDocumentClient.from(client);
 
 const PIPELINES_TABLE = process.env.DYNAMODB_PIPELINES_TABLE || "AgentOps-Pipelines";
 const DECISIONS_TABLE = process.env.DYNAMODB_AGENT_DECISIONS_TABLE || "AgentOps-AgentDecisions";

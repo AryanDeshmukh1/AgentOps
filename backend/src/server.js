@@ -11,6 +11,7 @@ import healthRoutes from './routes/health.js';
 import logger from './utils/logger.js';
 import approvalRoutes from './routes/approvals.js';
 import deploymentRoutes from './routes/deployments.js';
+import incidentRoutes from './routes/incidents.js';
 import { registerIO, CHANNELS } from './services/wsBroadcaster.js';
 import eventsRoutes from './routes/events.js';
 import swaggerUi from "swagger-ui-express";
@@ -89,6 +90,7 @@ app.use('/api/pipelines', readLimiter, pipelineRoutes);
 app.use('/api/approvals', readLimiter, approvalRoutes);
 app.use('/api/deployments', readLimiter, deploymentRoutes);
 app.use('/api/events', publicLimiter, eventsRoutes);
+app.use('/api/incidents', readLimiter, incidentRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
