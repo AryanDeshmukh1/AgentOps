@@ -46,3 +46,67 @@ export async function getPipelineDecisions(pipelineId) {
     throw err;
   }
 }
+
+/**
+ * Paginated, filterable pipeline list.
+ *
+ * Filters supported: status, repo, risk_level
+ * Pagination: cursor-based (LastEvaluatedKey)
+ */
+export async function listPipelinesPaginated({
+  limit = 20,
+  exclusiveStartKey = null,
+  status = null,
+  repo = null,
+  riskLevel = null,
+} = {}) {
+  try {
+    const filterParts = [];
+    const exprValues = {};
+    const exprNames = {};
+
+    if (status) {
+      filterParts.push("#status = :status");
+      exprNames["#status"] = "status";
+      exprValues[":status"] = status;
+    }
+    if (repo) {
+      filterParts.push("repo = :repo");
+      exprValues[":repo"] = repo;
+    }
+    if (riskLevel) {
+      filterParts.push("risk_level = :rl");
+      exprValues[":rl"] = riskLevel;
+    }
+
+    const scanParams = {
+      TableName: PIPELINES_TABLE,
+      Limit: limit,
+    };
+    if (filterParts.length > 0) {
+      scanParams.FilterExpression = filterParts.join(" AND ");
+      scanParams.ExpressionAttributeValues = exprValues;
+      if (Object.keys(exprNames).length > 0) {
+        scanParams.ExpressionAttributeNames = exprNames;
+      }
+    }
+    if (exclusiveStartKey) {
+      scanParams.ExclusiveStartKey = exclusiveStartKey;
+    }
+
+    const command = new ScanCommand(scanParams);
+    const result = await docClient.send(command);
+
+    // Sort the page newest-first (within the page)
+    const items = result.Items || [];
+    items.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+
+    return {
+      Items: items,
+      LastEvaluatedKey: result.LastEvaluatedKey,
+    };
+  } catch (err) {
+    logger.error(`Failed to list pipelines paginated: ${err.message}`);
+    throw err;
+  }
+}

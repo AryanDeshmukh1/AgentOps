@@ -13,6 +13,13 @@ import approvalRoutes from './routes/approvals.js';
 import deploymentRoutes from './routes/deployments.js';
 import { registerIO, CHANNELS } from './services/wsBroadcaster.js';
 import eventsRoutes from './routes/events.js';
+import swaggerUi from "swagger-ui-express";
+import YAML from "yaml";
+import fs from "fs";
+import { fileURLToPath } from "url";
+import path from "path";
+import { requestIdMiddleware, errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
+import { publicLimiter, readLimiter } from "./middleware/rateLimit.js";
 
 
 
@@ -55,15 +62,33 @@ app.use(express.json({
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
-// Routes
-app.use('/api/webhooks', webhookRoutes);
+// Attach request_id to every request
+app.use(requestIdMiddleware);
+
+// Mount OpenAPI / Swagger UI at /api/docs
+try {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const specPath = path.join(__dirname, ".", "openapi.yaml");
+  if (fs.existsSync(specPath)) {
+    const spec = YAML.parse(fs.readFileSync(specPath, "utf-8"));
+    app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(spec));
+    logger.info("[OpenAPI] Swagger UI mounted at /api/docs");
+  } else {
+    logger.warn("[OpenAPI] openapi.yaml not found, skipping Swagger UI");
+  }
+} catch (err) {
+  logger.error(`[OpenAPI] Failed to load spec: ${err.message}`);
+}
+
+// Routes — public endpoints get stricter rate limits
+app.use('/api/webhooks', publicLimiter, webhookRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/health', healthRoutes);
-app.use('/api/pipelines', pipelineRoutes);
-app.use('/api/approvals', approvalRoutes);
-app.use('/api/deployments', deploymentRoutes);
-app.use('/api/events', eventsRoutes);
-
+app.use('/api/pipelines', readLimiter, pipelineRoutes);
+app.use('/api/approvals', readLimiter, approvalRoutes);
+app.use('/api/deployments', readLimiter, deploymentRoutes);
+app.use('/api/events', publicLimiter, eventsRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -75,18 +100,6 @@ app.get('/', (req, res) => {
   });
 });
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not Found', path: req.path });
-});
-
-// Error handler
-app.use((err, req, res, next) => {
-  logger.error(err);
-  res.status(err.status || 500).json({
-    error: err.message || 'Internal Server Error',
-  });
-});
 
 // WebSocket connections
 // WebSocket: auth handshake
@@ -154,5 +167,9 @@ process.on('SIGTERM', () => {
     process.exit(0);
   });
 });
+
+// 404 + error handlers 
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 export { app, io };
