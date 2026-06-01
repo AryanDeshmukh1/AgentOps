@@ -37,12 +37,15 @@ const httpServer = createServer(app);
 const io = new SocketServer(httpServer, {
   cors: {
     origin: (origin, callback) => {
-      // Allow no-origin (file://, curl, mobile apps) in development
       if (!origin) return callback(null, true);
-      const allowed = [CORS_ORIGIN, 'http://localhost:3000', 'http://localhost:4000', 'null'];
-      if (allowed.includes(origin) || origin.startsWith('file://')) {
-        return callback(null, true);
-      }
+      const isAllowed =
+        origin === CORS_ORIGIN ||
+        origin.startsWith('http://localhost') ||
+        origin.startsWith('file://') ||
+        origin.endsWith('.vercel.app') ||
+        origin.endsWith('.railway.app') ||
+        origin.endsWith('.up.railway.app');
+      if (isAllowed) return callback(null, true);
       callback(new Error('CORS rejected for origin: ' + origin));
     },
     methods: ['GET', 'POST'],
