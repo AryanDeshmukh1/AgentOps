@@ -67,9 +67,5 @@ AgentOps/
 ├── docker-compose.yml
 ├── .env.example
 └── README.md
-```
 
-## Development Status
-
-🚧 **In active development** — 35-day build timeline.
 
