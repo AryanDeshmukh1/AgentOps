@@ -163,7 +163,7 @@ export default function PipelinesPage() {
             hint={hasFilters ? "Try clearing filters or pushing a new PR" : "Push a PR to see one appear here"}
           />
         ) : (
-          <table className="w-full text-sm">
+          <table data-tour="pipelines-table" className="w-full text-sm">
             <thead>
               <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
                 <th className="text-left px-4 py-2 font-medium">PR</th>

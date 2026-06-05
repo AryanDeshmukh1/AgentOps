@@ -67,7 +67,7 @@ export default function PipelineDetailPage() {
   const scores = reviewDecision?.report?.scores || null;
 
   return (
-    <>
+    <div data-tour="pipeline-detail">
       <button
         onClick={() => navigate('/pipelines')}
         className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 mb-4 transition-colors"
@@ -180,7 +180,7 @@ export default function PipelineDetailPage() {
           </Card>
         </>
       )}
-    </>
+    </div>
   );
 }
 

@@ -35,7 +35,7 @@ const httpServer = createServer(app);
 
 // Socket.io for real-time dashboard updates
 const io = new SocketServer(httpServer, {
-  cors: {
+  coclaudeirs: {
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       const isAllowed =

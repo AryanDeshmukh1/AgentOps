@@ -92,7 +92,7 @@ export default function IncidentsPage() {
   const selected = incidents.find(i => i.incident_id === selectedId);
 
   return (
-    <>
+    <div data-tour="incidents-page">
       <PageHeader
         title="Incidents"
         subtitle="Anomaly detection with AI-generated root cause analysis"
@@ -144,7 +144,7 @@ export default function IncidentsPage() {
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }
 

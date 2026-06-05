@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { GitPullRequest, ShieldCheck, Rocket, AlertTriangle, Settings, Activity, Command } from 'lucide-react';
+import { GitPullRequest, ShieldCheck, Rocket, AlertTriangle, Settings, Activity, Command, Sparkles, X } from 'lucide-react';
 import clsx from 'clsx';
 import { useWebSocket } from '../hooks/useWebSocket.js';
 import { ToastProvider, useToast } from './Toast.jsx';
 import CommandPalette from './CommandPalette.jsx';
+import Tour from './Tour.jsx';
+
 
 const NAV = [
-  { to: '/pipelines',   label: 'Pipelines',   icon: GitPullRequest, shortcut: 'P' },
-  { to: '/approvals',   label: 'Approvals',   icon: ShieldCheck,    shortcut: 'A' },
-  { to: '/deployments', label: 'Deployments', icon: Rocket,         shortcut: 'D' },
-  { to: '/incidents',   label: 'Incidents',   icon: AlertTriangle,  shortcut: 'I' },
-  { to: '/settings',    label: 'Settings',    icon: Settings,       shortcut: ',' },
+  { to: '/dashboard/pipelines',   label: 'Pipelines',   icon: GitPullRequest, shortcut: 'P' },
+  { to: '/dashboard/approvals',   label: 'Approvals',   icon: ShieldCheck,    shortcut: 'A' },
+  { to: '/dashboard/deployments', label: 'Deployments', icon: Rocket,         shortcut: 'D' },
+  { to: '/dashboard/incidents',   label: 'Incidents',   icon: AlertTriangle,  shortcut: 'I' },
+  { to: '/dashboard/settings',    label: 'Settings',    icon: Settings,       shortcut: ',' },
 ];
 
 export default function AppShell() {
@@ -115,7 +117,7 @@ function ShellInner() {
   return (
     <div className="h-screen w-screen flex bg-slate-950 text-slate-100">
       <aside className="w-60 border-r border-slate-800 flex flex-col">
-        <Link to="/" className="px-5 py-5 border-b border-slate-800 flex items-center gap-2">
+        <Link to="/dashboard" className="px-5 py-5 border-b border-slate-800 flex items-center gap-2">
           <Activity className="w-6 h-6 text-emerald-400" />
           <div>
             <div className="font-bold text-lg tracking-tight">AgentOps</div>
@@ -172,12 +174,52 @@ function ShellInner() {
           </div>
         </header>
 
-        <main className="flex-1 overflow-auto p-6">
-          <Outlet context={{ lastEvent, status }} />
-        </main>
+        <main className="flex-1 overflow-auto">
+  <DemoBanner />
+  <div className="p-6">
+    <Outlet context={{ lastEvent, status }} />
+  </div>
+</main>
       </div>
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+        <Tour />
+    </div>
+  );
+}
+
+
+function DemoBanner() {
+  const [dismissed, setDismissed] = useState(() => {
+    return typeof window !== 'undefined' && localStorage.getItem('agentops-banner-dismissed') === '1';
+  });
+
+  if (dismissed) return null;
+
+  const handleDismiss = () => {
+    localStorage.setItem('agentops-banner-dismissed', '1');
+    setDismissed(true);
+  };
+
+  return (
+    <div className="bg-gradient-to-r from-emerald-950/60 via-sky-950/60 to-violet-950/60 border-b border-emerald-900/40 px-6 py-2.5">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2 text-xs text-slate-300">
+          <Sparkles className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          <span>
+            <strong className="text-slate-100">Welcome — this is a portfolio demo.</strong>
+            {' '}Real live system on AWS DynamoDB. Click any pipeline row to see agent decisions, scores, and findings.
+            {' '}Press <kbd className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px] font-mono">⌘K</kbd> for quick nav.
+          </span>
+        </div>
+        <button
+          onClick={handleDismiss}
+          className="shrink-0 text-slate-500 hover:text-slate-300 transition-colors"
+          title="Dismiss"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
