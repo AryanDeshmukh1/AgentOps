@@ -42,9 +42,11 @@ const io = new SocketServer(httpServer, {
         origin === CORS_ORIGIN ||
         origin.startsWith('http://localhost') ||
         origin.startsWith('file://') ||
-        origin.endsWith('.vercel.app') ||
+       origin.endsWith('.vercel.app') ||
         origin.endsWith('.railway.app') ||
-        origin.endsWith('.up.railway.app');
+        origin.endsWith('.up.railway.app') ||
+        origin.endsWith('.netlify.app') ||
+        origin.endsWith('.onrender.com');
       if (isAllowed) return callback(null, true);
       callback(new Error('CORS rejected for origin: ' + origin));
     },
@@ -55,7 +57,21 @@ const io = new SocketServer(httpServer, {
 
 // Middleware
 app.use(helmet());
-app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    const isAllowed =
+      origin === CORS_ORIGIN ||
+      origin.startsWith('http://localhost') ||
+      origin.endsWith('.vercel.app') ||
+      origin.endsWith('.railway.app') ||
+      origin.endsWith('.netlify.app') ||
+      origin.endsWith('.onrender.com');
+    if (isAllowed) return callback(null, true);
+    callback(new Error('CORS rejected for origin: ' + origin));
+  },
+  credentials: true,
+}));
 // Capture raw body for webhook signature verification
 app.use(express.json({
   limit: '10mb',
