@@ -1,8 +1,21 @@
-Test the live demo at - https://jovial-sherbet-47a417.netlify.app
+
 
 # AgentOps — Multi-Agent DevOps Pipeline Orchestrator
 
 > An autonomous multi-agent AI system that manages CI/CD pipelines from code review through deployment to incident response, with human-in-the-loop governance.
+
+🌐 Live Demo
+The dashboard is deployed and live:
+👉 https://jovial-sherbet-47a417.netlify.app
+The backend services run on Render's free tier and spin down after 15 min of inactivity, so the first load may take 30-60 seconds while the backend wakes up. Once warm, real-time updates work immediately.
+What you can try on the live demo:
+
+Browse real pipelines that flowed through all 4 agents (12+ pipelines with actual Gemini findings)
+Click into a pipeline to see the agent timeline, score breakdown radar chart, and findings list
+View blue/green deployments with animated traffic visualization
+Open the incidents page to see anomaly detection + AI-generated root cause analysis
+Press Cmd+K to open the command palette
+Try the guided tour (button in the bottom-right corner)
 
 ## Overview
 
